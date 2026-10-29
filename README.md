@@ -24,3 +24,10 @@ See `draft-correctover-gg-mcp-parameter-risk` for the risk-classification draft 
 
 Data: CC-BY-SA-4.0 · Attribution: Correctover MCP Atlas
 Full legal code: [LICENSE](./LICENSE) · https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+## Verify
+`server_tools.jsonl.gz` SHA-256: `2350dc773dc43fd6ed0b012588f3ff295fb358106a0291a7dc59c57427f5780f`
+Re-derive after download: `shasum -a 256 server_tools.jsonl.gz`
+
+## Contact
+Maintained by Correctover. MCP/agent runtime security research and audits: https://correctover-assess.pages.dev
