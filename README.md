@@ -22,8 +22,10 @@ See `draft-correctover-gg-mcp-parameter-risk` for the risk-classification draft 
 
 ## License
 
-Data: CC-BY-SA-4.0 · Attribution: Correctover MCP Atlas
-Full legal code: [LICENSE](./LICENSE) · https://creativecommons.org/licenses/by-sa/4.0/legalcode
+Data: **CC0 1.0 Universal** (public domain dedication) — use it for anything, no permission needed.
+Full legal code: [LICENSE](./LICENSE) · https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+Attribution is **requested, not required**: "Correctover MCP Atlas" — https://github.com/DSHCorrectover/mcp-atlas-census
 
 ## Verify
 `server_tools.jsonl.gz` SHA-256: `2350dc773dc43fd6ed0b012588f3ff295fb358106a0291a7dc59c57427f5780f`
