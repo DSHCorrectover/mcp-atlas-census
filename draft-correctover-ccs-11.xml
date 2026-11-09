@@ -152,7 +152,7 @@
 <ol>
 <li><t>New Section 13.12: Description Obfuscation Attack. This negative test case documents a verified vulnerability where replacing dangerous keywords in tool descriptions with benign synonyms achieves a 33.3% evasion success rate against text-matching security rules. The attack demonstrates that lexical pattern matching alone is insufficient for security enforcement.</t></li>
 <li><t>Security Considerations (Section 14) extended with description obfuscation vulnerability disclosure and mitigation guidance. Implementations MUST consider behavioral detection mechanisms beyond text matching.</t></li>
-<li><t>New Section 20.6: Measurement Caliber and Empirical Baseline. This section clarifies the denominator chain for benchmark claims: 23,639 static tools → 1,241 reachable pool → 1,092 runtime invocations → 1,092 CCS receipts → 50 independently verified. It explicitly states that comparisons with other benchmarks require matching measurement caliber.</t></li>
+<li><t>New Section 20.6: Measurement Caliber and Empirical Baseline. This section clarifies the denominator chain for benchmark claims: 229,539 static tools → 1,241 reachable pool → 1,092 runtime invocations → 1,092 CCS receipts → 50 independently verified. It explicitly states that comparisons with other benchmarks require matching measurement caliber.</t></li>
 <li><t>New Informative Reference: CCS Supplementary Benchmark V2 (Zenodo DOI) archiving the empirical data underlying the description obfuscation test and measurement caliber clarification.</t></li>
 <li><t>Abstract updated to mention the description obfuscation vulnerability and measurement caliber clarification as new empirical contributions.</t></li>
 </ol>
@@ -164,7 +164,7 @@
 <li><t>DOI: 10.5281/zenodo.21603250 -- &quot;Action Receipts.&quot; This paper defines the concept of an action receipt as a tamper-evident record binding a decision to a specific action invocation.</t></li>
 <li><t>DOI: 10.5281/zenodo.21234580 -- &quot;CCS Standard v1.0.&quot; The overarching standard that defines the three pillars and the seven-dimensional verification model.</t></li>
 <li><t>DOI: 10.5281/zenodo.21783723 -- &quot;CCS 7-Dimensional Framework Three-Endpoint Closed Loop.&quot; Contains: IETF Internet-Draft + Zenodo DOI + PyPI ccs-verifier v1.1.0.</t></li>
-<li><t>DOI: [TO BE ASSIGNED] -- &quot;CCS Supplementary Benchmark V2.&quot; Contains: description obfuscation vulnerability test results (33.3% evasion rate), measurement caliber clarification (23,639 → 1,241 → 1,092 → 50 denominator chain), and reproducible empirical dataset. This record archives the benchmark data underlying Section 13.12 and Section 20.6 of this specification.</t></li>
+<li><t>DOI: [TO BE ASSIGNED] -- &quot;CCS Supplementary Benchmark V2.&quot; Contains: description obfuscation vulnerability test results (33.3% evasion rate), measurement caliber clarification (229,539 → 1,241 → 1,092 → 50 denominator chain), and reproducible empirical dataset. This record archives the benchmark data underlying Section 13.12 and Section 20.6 of this specification.</t></li>
 </ul>
 </section>
 </section>
@@ -1585,7 +1585,7 @@ if tool.actual_behavior matches DANGEROUS_BEHAVIOR_PATTERNS:
 <t>This section clarifies the denominator chain for benchmark claims and establishes reproducible measurement methodology for CCS implementations. Empirical benchmark claims are only meaningful when the measurement caliber is explicit; different denominators produce incomparable results.</t>
 <t>Denominator chain (verified November 2026):</t>
 <ol>
-<li><t>Static census: 23,639 tools discovered via public MCP server enumeration. This is the broadest possible denominator but includes unreachable servers, duplicate tools, and tools that never receive runtime invocations.</t></li>
+<li><t>Static census: 229,539 tools discovered via public MCP server enumeration. This is the broadest possible denominator but includes unreachable servers, duplicate tools, and tools that never receive runtime invocations.</t></li>
 <li><t>Reachable pool: 1,241 tools on servers that responded to at least one health check within 72 hours. This filters out unreachable infrastructure but still includes tools that may never be invoked.</t></li>
 <li><t>Runtime invocations: 1,092 tool calls observed over a 7-day observation window across 47 agent sessions. This is the operational denominator: tools that were actually invoked and therefore subject to CCS verification.</t></li>
 <li><t>CCS receipts produced: 1,092 receipts (100% coverage of runtime invocations). Every invocation produced a receipt, confirming fail-closed semantics at the intake layer.</t></li>
@@ -1593,8 +1593,8 @@ if tool.actual_behavior matches DANGEROUS_BEHAVIOR_PATTERNS:
 </ol>
 <t>Measurement caliber implications:</t>
 <ul>
-<li><t>Claims based on the static census (23,639) are NOT comparable to claims based on runtime invocations (1,092). The former measures discovery coverage; the latter measures operational enforcement.</t></li>
-<li><t>Block rate claims MUST specify the denominator: &quot;83.44% block rate&quot; over what population? If the population is &quot;all 23,639 static tools,&quot; the claim measures rule coverage, not runtime enforcement. If the population is &quot;1,092 runtime invocations,&quot; the claim measures operational security posture.</t></li>
+<li><t>Claims based on the static census (229,539) are NOT comparable to claims based on runtime invocations (1,092). The former measures discovery coverage; the latter measures operational enforcement.</t></li>
+<li><t>Block rate claims MUST specify the denominator: &quot;83.44% block rate&quot; over what population? If the population is &quot;all 229,539 static tools,&quot; the claim measures rule coverage, not runtime enforcement. If the population is &quot;1,092 runtime invocations,&quot; the claim measures operational security posture.</t></li>
 <li><t>Task-level vs. call-level measurement: A single user task may trigger multiple tool calls. Task-level success rates (e.g., &quot;100% task completion&quot;) are NOT comparable to call-level block rates (e.g., &quot;83.44% of calls blocked&quot;). This specification uses call-level measurement as the canonical denominator because CCS receipts are produced per call, not per task.</t></li>
 </ul>
 <t>Baseline comparison methodology:</t>

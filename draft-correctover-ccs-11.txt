@@ -656,7 +656,7 @@ Internet-Draft  Correctover Conformance Shape (CCS): Run   November 2026
 
    *  DOI: [TO BE ASSIGNED] -- "CCS Supplementary Benchmark V2."
       Contains: description obfuscation vulnerability test results
-      (33.3% evasion rate), measurement caliber clarification (23,639 ->
+      (33.3% evasion rate), measurement caliber clarification (229,539 ->
       1,241 -> 1,092 -> 50 denominator chain), and reproducible
       empirical dataset.  This record archives the benchmark data
       underlying Section 13.12 and Section 20.6 of this specification.
@@ -681,7 +681,7 @@ Internet-Draft  Correctover Conformance Shape (CCS): Run   November 2026
 
    3.   New Section 20.6: Measurement Caliber and Empirical Baseline.
         This section clarifies the denominator chain for benchmark
-        claims: 23,639 static tools -> 1,241 reachable pool -> 1,092
+        claims: 229,539 static tools -> 1,241 reachable pool -> 1,092
         runtime invocations -> 1,092 CCS receipts -> 50 independently
         verified.  It explicitly states that comparisons with other
         benchmarks require matching measurement caliber.
@@ -4151,7 +4151,7 @@ Internet-Draft  Correctover Conformance Shape (CCS): Run   November 2026
 
    Denominator chain (verified November 2026):
 
-   1.   Static census: 23,639 tools discovered via public MCP server
+   1.   Static census: 229,539 tools discovered via public MCP server
         enumeration.  This is the broadest possible denominator but
         includes unreachable servers, duplicate tools, and tools that
         never receive runtime invocations.
@@ -4177,12 +4177,12 @@ Internet-Draft  Correctover Conformance Shape (CCS): Run   November 2026
 
    Measurement caliber implications:
 
-   *  Claims based on the static census (23,639) are NOT comparable to
+   *  Claims based on the static census (229,539) are NOT comparable to
       claims based on runtime invocations (1,092).  The former measures
       discovery coverage; the latter measures operational enforcement.
 
    *  Block rate claims MUST specify the denominator: "83.44% block
-      rate" over what population?  If the population is "all 23,639
+      rate" over what population?  If the population is "all 229,539
       static tools," the claim measures rule coverage, not runtime
       enforcement.  If the population is "1,092 runtime invocations,"
       the claim measures operational security posture.
