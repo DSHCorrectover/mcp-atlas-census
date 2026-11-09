@@ -1,0 +1,1773 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude"
+     version="3"
+     submissionType="IETF"
+     category="exp"
+     ipr="trust200902"
+     docName="draft-correctover-ccs-11"
+     xml:lang="en">
+<front>
+<title>Correctover Conformance Shape (CCS): Runtime Verification for AI Agent Tool Calls</title>
+<author initials="G." surname="Wang" fullname="Guigui Wang">
+  <organization>Correctover</organization>
+  <address>
+    <email>wgg234114134@163.com</email>
+    <email>wangguigui@correctover.com</email>
+    <uri>https://correctover.com</uri>
+  </address>
+</author>
+<date year="2026" month="November" day="9"/>
+<abstract>
+<t>This document defines the Correctover Conformance Shape (CCS), a runtime verification framework for AI agent tool calls. CCS specifies seven verification dimensions (Structure, Schema, Latency, Cost, Identity, Integrity, Security) that tool calls and results must conform to at runtime. The framework defines a receipt format with Ed25519 signatures, three verdict values (allow, deny, escalate) and four executor lifecycle states (confirmed, dispatched, indeterminate, unknown), and normative requirements for implementations.</t>
+<t>This revision makes the document self-contained for publication: the related AEB and CAID specifications are reclassified as Informative References, and the native artifact requirements they motivate are restated normatively in this document so that no conformance requirement depends on an unreferenced work in progress. It also corrects the implementation-experience description (one reference implementation in two deployment forms, plus one independently developed third-party interoperability profile), clarifies the relationship to SCITT-based agent evidence work, and updates the author contact address. The detached Ed25519 signature construction over RFC 8785 canonical JSON and the receipt lifecycle and signing-algorithm conformance are unchanged from draft-08.</t>
+<t>This revision restructures key management around two orthogonal trust levels: VERIFIED, the self-contained integrity and key/signature consistency verifiable fully offline from the receipt alone, and ACCEPTED, which adds out-of-band issuer pinning and is the only level that authenticates the signer. The embedded public_key, public_key_fingerprint, and signing_algorithm fields are now required to be covered by the signature to prevent key substitution and algorithm downgrade.</t>
+<t>This revision adds empirical findings from benchmark testing: a description obfuscation vulnerability demonstrating 33.3% evasion success rate against text-matching security rules (Section 13.12), and measurement caliber clarification establishing the denominator chain for reproducible benchmark claims (Section 20.6). These additions are informative but critical for implementers assessing real-world security posture.</t>
+</abstract>
+</front>
+<middle>
+<section title="Introduction" anchor="s-1">
+<t>The Correctover Conformance Shape (CCS) defines the evidence protocol for the agent runtime protocol stack. It produces a single, tamper-evident, cryptographically bound artifact -- a CCS Receipt -- for every tool invocation decision made by an agent runtime&#x27;s governance layer. A CCS receipt answers: &quot;Given this exact request, this exact configuration, this exact runtime context, and this exact set of rules, the verifier decided ALLOW/DENY/ESCALATE, and here is the proof.&quot;</t>
+<t>CCS is not a policy language, an authorization framework, or a transport protocol. It is the evidence that a verifier produces when it finishes evaluating a command, together with the protocols for how that evidence enters the system, propagates across boundaries, and is delivered to enforcement consumers.</t>
+<t>The initial reference implementation (ccs-verifier 0.4.1) provides an in-process verifier with HMAC-SHA256 receipt signing covering the verification context (trace_id, verdict, timestamp, tool, params_hash, rule_summary). This document specifies extensions to that baseline to cover the full set of bindings that a self-contained runtime evidence artifact requires: request binding, response binding, runtime context binding, issuer/audience, freshness, nonce, and canonical configuration. These elements are specified normatively within this document; the related Action Evidence Boundary (AEB) and Canonical Action Identifier (CAID) specifications are cited only as Informative background and cross-ecosystem alignment. This document further defines the Evidence Intake Protocol, Evidence Propagation mechanisms, and the Enforcement Interface.</t>
+<t>This document is published as an Experimental protocol. Implementation experience consists of one reference implementation exercised in two deployment forms (an in-process plugin and an out-of-process gateway, Section 20.1 and Section 20.2) and one independently developed third-party interoperability profile (Section 20.5). The proposals herein are offered for review and refinement through the standard IETF process. The author welcomes feedback on all aspects of this specification, including the protocol architecture, evidence chain structure, and integration points with existing and emerging agent protocols.</t>
+<section title="Protocol Stack Position" anchor="s-1.1">
+<t>CCS occupies a defined position in the agent runtime protocol stack:</t>
+<table anchor="fig-1">
+<name>Protocol Stack Position</name>
+<thead><tr><th align="left">Layer</th><th align="left">Responsibility</th><th align="left">Specification</th></tr></thead>
+<tbody>
+<tr><td align="left">Transport (MCP/A2A)</td><td align="left">Message routing and serialization between agents and tools</td><td align="left">MCP, A2A</td></tr>
+<tr><td align="left">Evidence Protocol (CCS)</td><td align="left">Evidence generation, standardization, propagation, delivery</td><td align="left">This document</td></tr>
+<tr><td align="left">Enforcement (AEB)</td><td align="left">Policy decision consumption and action gating</td><td align="left">AEB <xref target="I-D.schrock-action-evidence-boundary"/></td></tr>
+<tr><td align="left">Tool Execution</td><td align="left">Actual tool invocation and outcome reporting</td><td align="left">Tool-specific</td></tr>
+</tbody>
+</table>
+<t>CCS is responsible for:</t>
+<ul>
+<li><t>Evidence generation: creating tamper-evident receipts from verification decisions.</t></li>
+<li><t>Evidence standardization: defining schemas, bindings, and canonicalization rules.</t></li>
+<li><t>Evidence propagation: ensuring evidence integrity across multi-agent chains and organizational boundaries.</t></li>
+<li><t>Evidence delivery: providing standardized interfaces for enforcement consumers to validate and consume evidence.</t></li>
+</ul>
+<t>CCS is NOT responsible for:</t>
+<ul>
+<li><t>Transport message routing (MCP/A2A layer).</t></li>
+<li><t>Policy decisions or enforcement logic (AEB layer).</t></li>
+<li><t>Identity handshakes or authentication (identity layer).</t></li>
+</ul>
+<t>Relationship to SCITT: the SCITT architecture <xref target="RFC9943"/> defines transparent registration of signed statements, a transparency service, and the receipts returned by that service; the SCITT charter explicitly does not standardize payload content data formats. CCS is exactly such a payload: a verifier-side runtime evidence artifact with its own detached Ed25519 signature over RFC 8785 canonical JSON. CCS does not define a transparency service, a signed-statement registration policy, non-equivocation, or a SCITT profile. Nothing in this document conflicts with, extends, or requires SCITT. Where an organization wants public or federated non-equivocation for CCS evidence, a CCS receipt may be carried as the payload of a SCITT signed statement by a separate, out-of-scope profile; several individual Internet-Drafts explore SCITT profiles for agent-action receipts, and CCS is positioned as a complementary evidence input to that family rather than as a competing profile. This boundary is revisited in Section 18.</t>
+</section>
+<section title="Scope" anchor="s-1.2">
+<t>CCS specifies:</t>
+<ul>
+<li><t>An Evidence Intake Protocol (Section 3) that governs how evidence legally enters the CCS system.</t></li>
+<li><t>A receipt schema (Section 4) that binds a verdict to the exact invocation context.</t></li>
+<li><t>A canonical configuration model (Section 5) that binds the receipt to the exact rule set and policy under which verification occurred.</t></li>
+<li><t>Nine binding mechanisms (Section 6) that connect the receipt to the request bytes, response bytes, runtime context, action identity, parameter identity, issuer, audience, nonce, and freshness window.</t></li>
+<li><t>Key management requirements (Section 7).</t></li>
+<li><t>Transport requirements (Section 8) including fail-closed semantics.</t></li>
+<li><t>Verifier source classification (Section 9).</t></li>
+<li><t>Conformance levels and test vectors (Section 10), including Level 4 (Evidence Propagation).</t></li>
+<li><t>Evidence Propagation across multi-agent chains and organizational boundaries (Section 11).</t></li>
+<li><t>The Enforcement Interface for standardized evidence consumption (Section 12).</t></li>
+<li><t>Negative test cases (Section 13), extended for propagation and enforcement scenarios.</t></li>
+</ul>
+<t>CCS does NOT define:</t>
+<ul>
+<li><t>A new authorization receipt format that replaces or competes with &lt;xref target=&quot;I-D.schrock-ep-authorization-receipts&quot;/&gt;. CCS is a verifier-side evidence record, not an organizational authorization artifact.</t></li>
+<li><t>A policy language. Rules are pluggable; CCS specifies how rule outcomes are recorded and bound, not what the rules are.</t></li>
+<li><t>A transport protocol for inter-process communication.</t></li>
+<li><t>A universal evidence taxonomy. CCS defines one artifact shape for one class of decision (tool-invocation governance).</t></li>
+<li><t>Enforcement policy decisions. CCS delivers evidence; it does not decide what to do with it.</t></li>
+</ul>
+</section>
+<section title="Changes from draft-02" anchor="s-1.3">
+<t>This document (draft-03) introduces the following changes from draft-02:</t>
+<ul>
+<li><t>Title changed from &quot;A Receipt and Binding Specification&quot; to &quot;An Evidence Protocol Specification&quot; to reflect the protocol stack positioning.</t></li>
+<li><t>Terminology refinement: &quot;Accumulated Evidence Chain (AEC)&quot; renamed to &quot;Evidence Chain (EC)&quot; to avoid abbreviation collision with concurrent IETF work. &quot;Evidence Layer&quot; references softened to &quot;evidence protocol&quot; throughout.</t></li>
+<li><t>New Section 3: Evidence Intake Protocol.</t></li>
+<li><t>New Section 11: Evidence Propagation.</t></li>
+<li><t>New Section 12: Enforcement Interface.</t></li>
+<li><t>New conformance Level 4: Evidence Propagation (Section 10.2).</t></li>
+<li><t>New negative test cases (Section 13.9-13.11).</t></li>
+<li><t>Extended Security Considerations (Section 14).</t></li>
+<li><t>All existing sections renumbered accordingly.</t></li>
+</ul>
+</section>
+<section title="Changes from draft-03" anchor="s-1.4">
+<t>This draft (draft-04) introduces the following changes from draft-03:</t>
+<t>This draft adds three mechanisms to address IETF discussion feedback:</t>
+<ol>
+<li><t>UNDECIDED with reason codes on the scope-comparison axis (Section 4.5.1). UNDECIDED is a per-comparison result, not a new top-level verdict.</t></li>
+<li><t>Verifier Capability Manifest (Section 4.6). A signed, versioned declaration of which profiles a verifier can evaluate, used for routing when UNDECIDED(PROFILE_NOT_HELD) is returned.</t></li>
+<li><t>Challenge Loop for Evidence Completeness (Section 4.7). The third axis is implemented as fail-closed refusal + structured challenge, not as a new verdict token. Deadline uses derivation (multiplier x expected_response_duration), following OSPF/BGP convention.</t></li>
+<li><t>Reachable-Set Exhaustion Report (Section 4.5.1). When a relying party consults multiple verifiers and receives PROFILE_NOT_HELD from all reachable verifiers, the result is a terminal state (SET_EXHAUSTED) with a trace of which verifiers were consulted.</t></li>
+<li><t>Manifest Profiles Digest (Section 4.6). The manifest includes a profiles_digest (SHA-256 of the canonical profiles array) that is hash-bound in the receipt.</t></li>
+</ol>
+</section>
+<section title="Changes from draft-04" anchor="s-1.5">
+<t>This draft (draft-05) introduces the following changes from draft-04, addressing IETF mailing list discussion feedback from agent2agent and SCITT WG threads (August 2026):</t>
+<ol>
+<li><t>Substance vs. Form distinction (Section 4.7.1): A verifier&#x27;s internal implementation details are substance and are out of scope for wire interoperability. The receipt fields required for another verifier to independently reproduce the result are form and are normative.</t></li>
+<li><t>CCS to draft-feng-agentproto-session-requirements-01 requirement mapping (Section 18): Explicit mapping table showing how CCS receipts satisfy REQ-5 and REQ-7.</t></li>
+<li><t>AUDIT BOF receipt mapping (Section 19): Mapping of CCS receipt fields to the W3C PROV data model.</t></li>
+<li><t>Evidence stack alignment (Section 4.7.2): Clarification that the CCS receipt occupies the evidence layer between transport attestations and enforcement decisions.</t></li>
+<li><t>No disposition authorises an action (Section 4.7.3): Explicit normative statement that all verification outcome states are evidence statements, NOT authorization.</t></li>
+<li><t>Trigger/scope double-position audit (Section 4.8 and Section 20): Every conformance rule in the 16-rule security set is expressed as a structural existence test.</t></li>
+<li><t>One test, stated once (Section 12.5): L1 receipt validation and runtime enforcement reference the same set of structural tests.</t></li>
+<li><t>Zero-hop chain semantics (Section 11.1.1): When delegation chain length is zero, the CCS receipt&#x27;s own issuance event serves as the root of trust.</t></li>
+<li><t>Shipped implementation notes (Section 21): dsh-ccs-security and correctover-mcp-gateway.</t></li>
+<li><t>Unknown outcome state (Section 4.5): A fourth outcome_status value, &quot;unknown&quot;, for interrupted execution.</t></li>
+</ol>
+</section>
+<section title="Changes from draft-05" anchor="s-1.6">
+<t>This draft (draft-06) introduces the following changes from draft-05, addressing interoperability verification and IETF list discussion feedback:</t>
+<ol>
+<li><t>Intended status changed from Informational to Experimental. Two independent interoperable implementations exist (Section 21).</t></li>
+<li><t>AEB and CAID promoted to Normative References (Section 16.1).</t></li>
+<li><t>Detached Ed25519 signature construction specified normatively (Section 4.2).</t></li>
+<li><t>Receipt lifecycle clarified (Sections 4.2, 6.2, 11).</t></li>
+<li><t>Signing algorithm conformance clarified (Sections 4.1, 4.2, 7).</t></li>
+<li><t>Python canonicalization examples corrected to produce RFC 8785 compliant output (ensure_ascii=False).</t></li>
+<li><t>Implementation report added (Section 21).</t></li>
+<li><t>Authorization Receipts remains Informative (Section 16.2).</t></li>
+</ol>
+</section>
+<section title="Changes from draft-09" anchor="s-1.9">
+<t>This draft (draft-10) introduces the following changes from draft-09:</t>
+<t>Key Management is restructured around two orthogonal trust levels. VERIFIED is self-contained integrity and key/signature consistency verifiable fully offline from the receipt alone; ACCEPTED adds out-of-band issuer pinning and is the only level that authenticates the signer. The embedded public_key, public_key_fingerprint, and signing_algorithm fields are now required to be covered by the signature to prevent key substitution and algorithm downgrade. The previous requirement that the Ed25519 public key always be distributed out of band is relaxed: the key SHOULD be embedded for offline VERIFIED and MUST additionally be pinned out of band only when issuer authentication (ACCEPTED) is required.</t>
+</section>
+<section title="Changes from draft-08" anchor="s-1.8">
+<t>This draft (draft-09) is a publication-readiness revision; it changes no normative protocol behavior, receipt fields, signatures, or test vectors from draft-08:</t>
+<ol>
+<li><t>AEB and CAID are reclassified from Normative to Informative References. Every conformance requirement they previously anchored (the native-artifact binding set in Section 1 and Section 6, and the action identifier semantics in Section 6.4) is now stated normatively within this document, so no normative requirement depends on an unreferenced work in progress.</t></li>
+<li><t>The implementation-experience description is corrected. The in-process plugin (Section 20.1) and the out-of-process gateway (Section 20.2) are two deployment forms of one reference implementation, not two independent implementations. The only independently developed third-party interoperability profile is the EMILIA profile (Section 20.5). The abstract and Section 1 now state this accurately, and the prior cross-reference that pointed readers to the conformance test vector section for implementation notes is corrected to point at Section 20.</t></li>
+<li><t>The relationship to SCITT-based agent-evidence and transparency work is clarified (Section 1.1 and Section 18): CCS is a verifier-side runtime evidence format and protocol; it neither defines nor competes with a transparency service, signed-statement registration, or a SCITT profile.</t></li>
+<li><t>The author contact address is updated to wangguigui@correctover.com; the author is listed as a natural person (Guigui Wang, Correctover).</t></li>
+</ol>
+</section>
+<section title="Changes from draft-10" anchor="s-1.10">
+<t>This draft (draft-11) introduces the following changes from draft-10, addressing empirical benchmark findings and measurement methodology clarity:</t>
+<ol>
+<li><t>New Section 13.12: Description Obfuscation Attack. This negative test case documents a verified vulnerability where replacing dangerous keywords in tool descriptions with benign synonyms achieves a 33.3% evasion success rate against text-matching security rules. The attack demonstrates that lexical pattern matching alone is insufficient for security enforcement.</t></li>
+<li><t>Security Considerations (Section 14) extended with description obfuscation vulnerability disclosure and mitigation guidance. Implementations MUST consider behavioral detection mechanisms beyond text matching.</t></li>
+<li><t>New Section 20.6: Measurement Caliber and Empirical Baseline. This section clarifies the denominator chain for benchmark claims: 23,639 static tools → 1,241 reachable pool → 1,092 runtime invocations → 1,092 CCS receipts → 50 independently verified. It explicitly states that comparisons with other benchmarks require matching measurement caliber.</t></li>
+<li><t>New Informative Reference: CCS Supplementary Benchmark V2 (Zenodo DOI) archiving the empirical data underlying the description obfuscation test and measurement caliber clarification.</t></li>
+<li><t>Abstract updated to mention the description obfuscation vulnerability and measurement caliber clarification as new empirical contributions.</t></li>
+</ol>
+</section>
+<section title="Relationship to CCS Formal Framework (DOI References)" anchor="s-1.7">
+<t>This Internet-Draft is a protocol specification derived from and complementary to the following academic publications:</t>
+<ul>
+<li><t>DOI: 10.5281/zenodo.21271910 -- &quot;CCS Formal Framework.&quot; This paper defines the mathematical foundation: the Required(T) subset of Supported(T) conformance criterion.</t></li>
+<li><t>DOI: 10.5281/zenodo.21603250 -- &quot;Action Receipts.&quot; This paper defines the concept of an action receipt as a tamper-evident record binding a decision to a specific action invocation.</t></li>
+<li><t>DOI: 10.5281/zenodo.21234580 -- &quot;CCS Standard v1.0.&quot; The overarching standard that defines the three pillars and the seven-dimensional verification model.</t></li>
+<li><t>DOI: 10.5281/zenodo.21783723 -- &quot;CCS 7-Dimensional Framework Three-Endpoint Closed Loop.&quot; Contains: IETF Internet-Draft + Zenodo DOI + PyPI ccs-verifier v1.1.0.</t></li>
+<li><t>DOI: [TO BE ASSIGNED] -- &quot;CCS Supplementary Benchmark V2.&quot; Contains: description obfuscation vulnerability test results (33.3% evasion rate), measurement caliber clarification (23,639 → 1,241 → 1,092 → 50 denominator chain), and reproducible empirical dataset. This record archives the benchmark data underlying Section 13.12 and Section 20.6 of this specification.</t></li>
+</ul>
+</section>
+</section>
+
+<section title="Terminology" anchor="s-2">
+<t>The key words &quot;MUST&quot;, &quot;MUST NOT&quot;, &quot;REQUIRED&quot;, &quot;SHALL&quot;, &quot;SHALL NOT&quot;, &quot;SHOULD&quot;, &quot;SHOULD NOT&quot;, &quot;RECOMMENDED&quot;, &quot;NOT RECOMMENDED&quot;, &quot;MAY&quot;, and &quot;OPTIONAL&quot; in this document are to be interpreted as described in BCP 14 <xref target="RFC2119"/> <xref target="RFC8174"/> when, and only when, they appear in all capitals, as shown here.</t>
+<t>CCS-specific terms:</t>
+<dl>
+<dt>Command</dt><dd>An immutable, structured representation of a tool invocation request, comprising at minimum: agent_id, tool name, parameters, timestamp, and trace_id. The Command is the input to verification.</dd>
+<dt>Verifier</dt><dd>A component that evaluates a Command against a set of Rules and produces a VerificationResult. The verifier MAY run in-process (same address space as the agent) or out-of-process (separate address space, separate crash domain).</dd>
+<dt>Rule</dt><dd>A pluggable unit of policy evaluation. A Rule accepts a Command and returns a RuleResult with a verdict (allow, deny, escalate), an optional reason string, and a latency measurement.</dd>
+<dt>VerificationResult</dt><dd>The output of a verification. Contains the verdict, signed receipt, rule results, and metadata.</dd>
+<dt>Receipt</dt><dd>A truncated HMAC-SHA256 (or Ed25519, per Section 7) digest that binds the verification context to a shared secret or signing key, providing tamper-evident audit.</dd>
+<dt>Config Hash</dt><dd>A SHA-256 digest of the canonical JSON representation of the verifier&#x27;s configuration (rule set, policy version, signing key identifier). Binds the receipt to the exact policy under which verification occurred.</dd>
+<dt>Fail-closed</dt><dd>A property of the enforcement mechanism whereby any failure in the verification path -- exception, timeout, missing input, ambiguous state -- results in the tool invocation being blocked, not allowed. This is the opposite of fail-open (<xref target="CWE-636"/>).</dd>
+<dt>Conformance Shape</dt><dd>The complete set of fields, bindings, and semantic constraints that a CCS receipt MUST satisfy to be considered conformant at a given level.</dd>
+<dt>VERIFIED</dt><dd>The trust level at which the signature is cryptographically valid against the public key bound in the receipt over the RFC 8785 JCS canonicalization of every signed field. VERIFIED is reachable fully offline from the receipt alone and establishes self-contained integrity and key/signature consistency, not the identity of the signer.</dd>
+<dt>ACCEPTED</dt><dd>The trust level at which, in addition to VERIFIED, the bound public key or its fingerprint matches an issuer the relying party has pinned out of band. ACCEPTED is the only level that authenticates the signer.</dd>
+<dt>Outcome status</dt><dd>The epistemic state of a verification result regarding the action&#x27;s outcome. One of: confirmed, dispatched, indeterminate, unknown. Orthogonal to the verdict (allow/deny/escalate). &quot;unknown&quot; indicates that the invocation was recorded but execution was interrupted (process crash, watchdog restart, hot-reload) before a result was durably persisted.</dd>
+<dt>Verifier policy floor</dt><dd>The minimum security requirements enforced by a CCS verifier, regardless of the server&#x27;s self-declared profile. Non-negotiable from the server side.</dd>
+<dt>Reconcilability</dt><dd>The property of an action whereby the effecting side can attest to what actually occurred after execution. Independent from severity.</dd>
+<dt>Evidence Intake</dt><dd>The process by which an agent runtime submits tool invocation data to the CCS layer for evidence generation. The intake is the controlled entry point for all evidence entering the CCS system.</dd>
+<dt>Evidence Envelope</dt><dd>A wrapper structure that carries a CCS receipt plus chain metadata for propagation across agent boundaries. The envelope preserves the original receipt and adds propagation context.</dd>
+<dt>Evidence Chain (EC)</dt><dd>An ordered list of CCS receipts linked by chain integrity hashes. Each receipt in the chain cryptographically references its predecessor.</dd>
+<dt>Chain Integrity</dt><dd>The property that each receipt in a chain cryptographically references its predecessor via a receipt_hash linkage, preventing insertion, removal, or modification of chain members.</dd>
+<dt>Enforcement Consumer</dt><dd>A system that validates CCS evidence and maps it to enforcement decisions. The AEB is a canonical enforcement consumer.</dd>
+<dt>Intake Fail-Closed</dt><dd>The property that any failure in evidence intake results in no receipt being produced and a denial of the tool invocation. The system MUST NOT fall back to fail-open behavior.</dd>
+<dt>Cross-Organization Evidence</dt><dd>Evidence that propagates across organizational boundaries, requiring self-contained verification data so that the receiving organization can validate the evidence without external lookups.</dd>
+<dt>Summary Hash</dt><dd>A single cryptographic hash that represents the entire Evidence Chain, computed over all receipt hashes in insertion order.</dd>
+</dl>
+<t>Contributors: The distinction between evidence sufficiency and executor lifecycle was developed through discussion with Iman Schrock (AEB-03) and Blake Morrison (CAE 3.3/3.4, executor lifecycle, B3-y).</t>
+</section>
+
+<section title="Evidence Intake Protocol" anchor="s-3">
+<t>This section defines how evidence legally enters the CCS system. The Evidence Intake Protocol establishes &quot;entry sovereignty&quot; -- the right of the CCS evidence protocol to control what constitutes valid input. All evidence in the CCS system originates through this protocol; there is no other path.</t>
+<section title="Intake Interface" anchor="s-3.1">
+<t>The intake interface is the standard interface through which agent runtimes submit tool invocation data for evidence generation.</t>
+<t>Input contract:</t>
+<t>The Command object submitted to the intake interface MUST contain the following fields:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "intake_version": "1.3",
+  "agent_id": "agent-001",
+  "tool": "search_web",
+  "params": {"query": "weather in Tokyo"},
+  "timestamp": 1722384000.0,
+  "trace_id": "a1b2c3d4e5f67890"
+}
+]]></sourcecode>
+<t>Required fields:</t>
+<ul>
+<li><t>intake_version: The CCS schema version. MUST be &quot;1.3&quot; for this specification.</t></li>
+<li><t>agent_id: Identifier of the invoking agent.</t></li>
+<li><t>tool: Name of the tool being invoked.</t></li>
+<li><t>params: Structured parameters for the tool invocation.</t></li>
+<li><t>timestamp: Unix timestamp of the invocation request.</t></li>
+<li><t>trace_id: Unique identifier for this verification event.</t></li>
+</ul>
+<t>Optional fields:</t>
+<ul>
+<li><t>runtime_context: JSON object containing caller_identity, tenant, environment, and other execution environment fields.</t></li>
+<li><t>delegation_chain: If this invocation is part of a multi-agent delegation, the parent receipt information.</t></li>
+</ul>
+<t>Synchronicity requirements:</t>
+<ul>
+<li><t>For in-process deployment, intake MUST be synchronous: the caller blocks until the intake completes or fails.</t></li>
+<li><t>For out-of-process deployment, intake MAY be asynchronous, but the caller MUST block until a receipt or error response is received before proceeding with the tool invocation.</t></li>
+</ul>
+<t>Versioning:</t>
+<t>The intake_version field ensures that the verifier and the caller agree on the expected field set and normalization rules. If the verifier receives an intake_version it does not support, it MUST return an INTAKE_MALFORMED error (Section 3.4).</t>
+</section>
+<section title="Request Normalization" anchor="s-3.2">
+<t>Before evidence generation, the intake interface normalizes the incoming request to ensure deterministic processing.</t>
+<t>JSON canonicalization: The params field MUST be serialized using JSON Canonicalization Scheme (JCS) as defined in <xref target="RFC8785"/>:</t>
+<sourcecode type="python"><![CDATA[
+def canonical_params(params: dict) -> bytes:
+    return json.dumps(
+        params,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False
+    ).encode("utf-8")
+]]></sourcecode>
+<t>Note: The Python snippet above uses ensure_ascii=False so that non-ASCII characters are emitted as their UTF-8 encoding, matching the normative RFC 8785 JCS output. Earlier revisions used ensure_ascii=True, which produced \uXXXX escapes for non-ASCII code points and therefore different signed bytes. Implementations MUST treat RFC 8785 JCS output as the canonical byte sequence; language-specific convenience serializers that deviate from JCS (including default ascii escaping) are not compliant.</t>
+<t>Unicode normalization: All string fields in the Command MUST be normalized to Unicode Normalization Form C (NFC) before processing.</t>
+<t>Timestamp normalization: All timestamps MUST be converted to UTC before processing. Implementations MUST reject timestamps with timezone offsets other than UTC.</t>
+<t>Binary data handling: Any binary data in the params MUST be encoded as base64 (standard encoding, with padding) before canonicalization.</t>
+<t>Maximum input size:</t>
+<t>The intake interface MUST enforce the following size limits:</t>
+<table anchor="tbl-2">
+<name>Figure 2</name>
+<thead><tr><th align="left">Component</th><th align="left">Max Size</th><th align="left">Behavior on Overflow</th></tr></thead>
+<tbody>
+<tr><td align="left">params (canonical bytes)</td><td align="left">64 KB</td><td align="left">INTAKE_OVERFLOW error</td></tr>
+<tr><td align="left">tool name</td><td align="left">256 bytes</td><td align="left">INTAKE_OVERFLOW error</td></tr>
+<tr><td align="left">agent_id</td><td align="left">512 bytes</td><td align="left">INTAKE_OVERFLOW error</td></tr>
+<tr><td align="left">runtime_context</td><td align="left">16 KB</td><td align="left">INTAKE_OVERFLOW error</td></tr>
+<tr><td align="left">total intake message</td><td align="left">128 KB</td><td align="left">INTAKE_OVERFLOW error</td></tr>
+</tbody>
+</table>
+</section>
+<section title="Intake Fail-Closed Semantics" anchor="s-3.3">
+<t>The intake protocol enforces fail-closed semantics at the entry point. If intake fails for ANY reason, the system MUST NOT produce a receipt and the caller MUST treat this as a denial.</t>
+<t>Failure conditions:</t>
+<ul>
+<li><t>Malformed input: The intake message is not valid JSON, or required fields are missing, or field types are incorrect.</t></li>
+<li><t>Normalization failure: The params contain values that cannot be canonicalized (e.g., NaN, Infinity, circular references).</t></li>
+<li><t>Size overflow: Any component exceeds its maximum size limit.</t></li>
+<li><t>Timeout: The intake processing does not complete within the configured timeout.</t></li>
+<li><t>Version mismatch: The intake_version is not supported.</t></li>
+</ul>
+<t>Invariant: Under no circumstances MAY the system fall back to fail-open behavior. If the verifier cannot process the intake, the tool invocation MUST be blocked. This is the fundamental security guarantee of the CCS evidence protocol: no evidence, no execution.</t>
+<t>The fail-closed invariant is enforced at the intake boundary:</t>
+<sourcecode type="python"><![CDATA[
+def intake(command: Command) -> Union[Receipt, IntakeError]:
+    try:
+        normalized = normalize(command)
+        if not validate(normalized):
+            return IntakeError("INTAKE_MALFORMED")
+        receipt = generate_receipt(normalized)
+        return receipt
+    except Exception:
+        return IntakeError("INTAKE_FAILED")
+]]></sourcecode>
+<t>Any exception in the intake path produces an IntakeError, which the caller MUST treat as a denial.</t>
+</section>
+<section title="Intake Error Responses" anchor="s-3.4">
+<t>When intake fails, the verifier returns a structured error response.</t>
+<t>Error response format:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "error_code": "INTAKE_MALFORMED",
+  "error_message": "Required field 'tool' is missing",
+  "retry_after": null,
+  "trace_id": "a1b2c3d4e5f67890"
+}
+]]></sourcecode>
+<t>Error taxonomy:</t>
+<table anchor="tbl-3">
+<name>Figure 3</name>
+<thead><tr><th align="left">Error Code</th><th align="left">Retry</th><th align="left">Description</th></tr></thead>
+<tbody>
+<tr><td align="left">INTAKE_MALFORMED</td><td align="left">MAY</td><td align="left">Input is not valid JSON, or field types are incorrect.</td></tr>
+<tr><td align="left">INTAKE_MISSING_FIELD</td><td align="left">MAY</td><td align="left">A required field is absent.</td></tr>
+<tr><td align="left">INTAKE_OVERFLOW</td><td align="left">MUST NOT</td><td align="left">A component exceeds its size limit.</td></tr>
+<tr><td align="left">INTAKE_TIMEOUT</td><td align="left">MAY</td><td align="left">Processing exceeded the timeout.</td></tr>
+<tr><td align="left">INTAKE_VERSION_UNSUPPORTED</td><td align="left">MUST NOT</td><td align="left">The intake_version is not supported.</td></tr>
+</tbody>
+</table>
+<t>Security requirements for error responses:</t>
+<ul>
+<li><t>Error responses MUST NOT leak internal implementation details (stack traces, internal paths, key identifiers).</t></li>
+<li><t>Error responses MUST be structurally distinguishable from valid receipts. An error response MUST NOT contain a receipt field, and a receipt MUST NOT contain an error_code field.</t></li>
+<li><t>The trace_id in the error response (if available) allows correlation with the original intake attempt.</t></li>
+</ul>
+</section>
+</section>
+
+<section title="CCS Receipt Schema" anchor="s-4">
+<section title="Field Definitions" anchor="s-4.1">
+<t>A conforming CCS Receipt is a JSON object conforming to I-JSON <xref target="RFC7493"/>. The following table defines each field. All 22 fields are implemented in ccs-verifier 0.4.1.</t>
+<table anchor="tbl-4">
+<name>Figure 4</name>
+<thead><tr><th align="left">Field</th><th align="left">Type</th><th align="left">Status</th><th align="left">Required</th><th align="left">Description</th></tr></thead>
+<tbody>
+<tr><td align="left">trace_id</td><td align="left">string (16-hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">SHA-256 of time.time_ns(), truncated to 16 hex chars. Uniquely identifies this verification event.</td></tr>
+<tr><td align="left">verdict</td><td align="left">string (enum)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">One of: &quot;allow&quot;, &quot;deny&quot;, &quot;escalate&quot;.</td></tr>
+<tr><td align="left">timestamp</td><td align="left">float</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Unix timestamp at which the verdict was finalized.</td></tr>
+<tr><td align="left">tool</td><td align="left">string</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">The tool name from the Command.</td></tr>
+<tr><td align="left">params_hash</td><td align="left">string (16-hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">SHA-256 of canonical JSON of Command.params, truncated to 16 hex chars.</td></tr>
+<tr><td align="left">rule_summary</td><td align="left">string</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Pipe-delimited list of rule_name=verdict pairs.</td></tr>
+<tr><td align="left">receipt</td><td align="left">string (32-hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">HMAC-SHA256 over signed bytes (Section 4.2), truncated to 32 hex chars.</td></tr>
+<tr><td align="left">verified_at</td><td align="left">float</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Unix timestamp of verification.</td></tr>
+<tr><td align="left">block_reason</td><td align="left">string</td><td align="left">Implemented</td><td align="left">Conditional</td><td align="left">Human-readable reason for deny/escalate. MUST be empty for allow.</td></tr>
+<tr><td align="left">request_hash</td><td align="left">string (hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">SHA-256 of the canonical bytes of the original request (Section 6.1).</td></tr>
+<tr><td align="left">response_hash</td><td align="left">string (hex)</td><td align="left">Implemented</td><td align="left">SHOULD</td><td align="left">SHA-256 of the tool response bytes (Section 6.2).</td></tr>
+<tr><td align="left">runtime_context_hash</td><td align="left">string (hex)</td><td align="left">Implemented</td><td align="left">SHOULD</td><td align="left">SHA-256 of canonical JSON of runtime context (Section 6.3).</td></tr>
+<tr><td align="left">action</td><td align="left">string</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Deterministic action identifier combining tool name with the full canonical-parameter digest (Section 6.4); optional external taxonomy mapping is out of scope.</td></tr>
+<tr><td align="left">config_hash</td><td align="left">string (hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">SHA-256 of the canonical config (Section 5).</td></tr>
+<tr><td align="left">issuer</td><td align="left">string (URI)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Verifier URI (Section 6.6).</td></tr>
+<tr><td align="left">audience</td><td align="left">string (URI)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Intended consumer URI (Section 6.7).</td></tr>
+<tr><td align="left">nonce</td><td align="left">string (hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Single-use value for replay prevention (Section 6.8).</td></tr>
+<tr><td align="left">sequence</td><td align="left">integer</td><td align="left">Implemented</td><td align="left">SHOULD</td><td align="left">Monotonically increasing counter (Section 6.8).</td></tr>
+<tr><td align="left">issued_at</td><td align="left">float</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Receipt issue timestamp (Section 6.9).</td></tr>
+<tr><td align="left">expires_at</td><td align="left">float</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Receipt expiry timestamp (Section 6.9).</td></tr>
+<tr><td align="left">max_clock_skew</td><td align="left">float</td><td align="left">Implemented</td><td align="left">SHOULD</td><td align="left">Max clock skew in seconds. Default: 30.0.</td></tr>
+<tr><td align="left">signature</td><td align="left">string (128-hex)</td><td align="left">Implemented</td><td align="left">MUST</td><td align="left">Ed25519 signature over RFC 8785 canonical JSON of fields 1-21; Ed25519-only for v1.3.</td></tr>
+</tbody>
+</table>
+</section>
+<section title="Signed Bytes" anchor="s-4.2">
+<t>The receipt field in the 0.4.1 reference implementation is computed by the sign_receipt function as follows:</t>
+<t>Signing payload construction (0.4.1, Implemented):</t>
+<sourcecode type="text"><![CDATA[
+payload = "{trace_id}:{verdict}:{timestamp}:{tool}:{params_hash}:{rule_summary}"
+]]></sourcecode>
+<t>Each field is interpolated using its string representation. The timestamp is the Python float from time.time(). The payload is then encoded as UTF-8.</t>
+<t>Algorithm (0.4.1, Implemented):</t>
+<sourcecode type="text"><![CDATA[
+receipt = HMAC-SHA256(secret, payload.encode("utf-8")).hexdigest()[:32]
+]]></sourcecode>
+<t>Where secret is a 32-byte key (generated via secrets.token_bytes(32) if not provided). The output is truncated to the first 32 hexadecimal characters of the full 64-character hex digest.</t>
+<t>Extended signing payload (Implemented, for EC mapping): When the extended fields (Section 4.1) are present, the signing payload MUST be extended to include them:</t>
+<sourcecode type="text"><![CDATA[
+extended_payload = "{trace_id}:{verdict}:{timestamp}:{tool}:{params_hash}:{rule_summary}:{request_hash}:{response_hash}:{runtime_context_hash}:{action}:{config_hash}:{issuer}:{audience}:{nonce}:{sequence}:{issued_at}:{expires_at}"
+]]></sourcecode>
+<t>Signing algorithm conformance (Normative):</t>
+<t>The 22-field v1.3 receipt (Level 1 and above) uses Ed25519 exclusively for field 22. The field contains 128 lowercase hexadecimal characters (64-byte Ed25519 signature). HMAC-SHA256 truncation (32 hex chars) applies only to the legacy 7-field Level 0 receipt (field 7); it MUST NOT be used in field 22 of a v1.3 receipt.</t>
+<t>Detached Ed25519 signature construction (Normative):</t>
+<t>The signature field (field 22) is a detached Ed25519 signature computed as follows:</t>
+<ol>
+<li><t>Construct a JSON object containing receipt fields 1-21, excluding field 22 itself.</t></li>
+<li><t>Apply RFC 8785 JSON Canonicalization Scheme (JCS) to produce the canonical byte sequence. All non-ASCII characters are emitted as UTF-8 per JCS; implementations MUST NOT apply ASCII-only escaping.</t></li>
+<li><t>Sign the canonical bytes using the Ed25519 private key corresponding to the issuer&#x27;s published public key.</t></li>
+<li><t>Encode the signature as 128 lowercase hexadecimal characters (64 bytes).</t></li>
+</ol>
+<t>The signature is detached: field 22 is not included in its own signed bytes. A verifier MUST reconstruct the canonical JSON from fields 1-21 (excluding field 22), apply RFC 8785, and verify the Ed25519 signature over those bytes. Any field not included in the canonical JSON is not covered by the signature.</t>
+<t>This construction was validated by an independently developed third-party interoperability profile (Section 20.5) which achieved 14/14 conformance checks using this exact signing procedure.</t>
+<t>Receipt lifecycle (Normative):</t>
+<t>The 22-field v1.3 receipt is a post-execution evidence record. It is finalized after the tool invocation completes and response_hash (field 12) is computed. The durability requirement in Section 11 applies in two phases:</t>
+<t>(a) Pre-execution: the admission decision (verdict, trace_id, timestamp, tool, params_hash, rule_summary, request_hash, config_hash, action, issuer, audience, nonce, issued_at, and policy context) MUST be durably persisted before enforcement permits the invocation to proceed. A crash between admission and execution MUST leave an auditable admission record.</t>
+<t>(b) Post-execution: after the tool returns, the verifier (or a post-invocation hook) computes response_hash, determines outcome_status, and finalizes the 22-field receipt with field 22. The final receipt is the durable post-execution evidence artifact. If execution is interrupted before response_hash can be computed, the record remains open with outcome_status=unknown (Section 4.5) and is finalized when outcome is determined or explicitly resolved.</t>
+<t>A deny verdict does not require execution: the receipt is finalized at admission time with an empty response_hash and outcome_status=confirmed (the denial itself is the confirmed outcome). An allow verdict requires post-execution finalization; until finalized it has outcome_status=dispatched.</t>
+<t>This two-phase model resolves the apparent contradiction between the pre-invocation durability requirement and the post-hoc nature of response_hash: they apply to different stages of the same evidence record, identified by a common trace_id.</t>
+<t>Critical property: The signed bytes cover the full verification context. Any change to any signed field -- the tool name, the parameters, the verdict, the timestamp, the rule summary -- invalidates the receipt. This is what makes the receipt tamper-evident.</t>
+</section>
+<section title="Receipt JSON Example" anchor="s-4.3">
+<t>The following is an example CCS receipt as produced by ccs-verifier 0.4.1 (core fields):</t>
+<sourcecode type="json"><![CDATA[
+{
+  "trace_id": "a1b2c3d4e5f67890",
+  "verdict": "deny",
+  "timestamp": 1722384000.123456,
+  "tool": "shell_exec",
+  "params_hash": "f9e8d7c6b5a43210",
+  "rule_summary": "ssrf_protection=allow|rce_protection=deny",
+  "receipt": "0123456789abcdef0123456789abcdef",
+  "verified_at": 1722384000.123890,
+  "block_reason": "RCE pattern detected"
+}
+]]></sourcecode>
+<t>The following example shows the full receipt with all 22 fields:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "trace_id": "a1b2c3d4e5f67890",
+  "verdict": "allow",
+  "timestamp": 1722384000.123456,
+  "tool": "search_web",
+  "params_hash": "1234567890abcdef",
+  "rule_summary": "ssrf_protection=allow|rce_protection=allow",
+  "receipt": "fedcba9876543210fedcba9876543210",
+  "verified_at": 1722384000.123890,
+  "block_reason": "",
+  "request_hash": "sha256:e3b0c44298fc1c14...",
+  "response_hash": "",
+  "runtime_context_hash": "sha256:7d865e959b246691...",
+  "action": "ccs:tool-invoke:search_web:sha256:1234567890abcdef",
+  "config_hash": "sha256:aabbccdd0011223344...",
+  "issuer": "https://verifier.example.com/ccs/v1",
+  "audience": "https://executor.example.com/aeb",
+  "nonce": "f47ac10b58cc4372a5670e02b2c3d479",
+  "sequence": 42,
+  "issued_at": 1722384000.123000,
+  "expires_at": 1722384060.123000,
+  "max_clock_skew": 30.0,
+  "signature": "a1b2c3d4e5f6..."
+}
+]]></sourcecode>
+</section>
+<section title="Verifier Policy Floor" anchor="s-4.4">
+<t>A conforming CCS verifier enforces a non-negotiable policy floor. When a server or tool endpoint declares a security profile that is weaker than the verifier&#x27;s minimum requirements, the verifier MUST reject the invocation rather than downgrading to match the server&#x27;s declared profile.</t>
+<t>This requirement addresses a documented failure mode in the MCP ecosystem where servers self-declare their security posture, and relying parties accept the declaration at face value.</t>
+<t>The verifier policy floor is enforced at the verification step, before the tool invocation proceeds. The floor is determined by the verifier&#x27;s canonical configuration (Section 5) and is bound into the receipt via the config_hash field.</t>
+<t>Implementation: The verifier&#x27;s canonical configuration includes a policy_floor field. During verification, the verifier compares the server&#x27;s declared profile against this floor. If the declared profile is weaker, the verifier MUST return a deny verdict with block_reason set to &quot;policy_floor_violation&quot;.</t>
+</section>
+<section title="Verification Outcome States" anchor="s-4.5">
+<t>A CCS verifier produces one of three verdict values:</t>
+<ul>
+<li><t>allow: The invocation passed all verification dimensions.</t></li>
+<li><t>deny: The invocation failed one or more verification dimensions.</t></li>
+<li><t>escalate: The verifier cannot make a definitive determination.</t></li>
+</ul>
+<t>These three verdict values constitute the CCS evidence sufficiency axis. This axis is independent from the executor lifecycle axis.</t>
+<t>In addition to these verdict states, the verifier MAY record an outcome_status field that captures the epistemic state regarding the action&#x27;s outcome:</t>
+<ul>
+<li><t>confirmed: The outcome is fully observable.</t></li>
+<li><t>dispatched: The verifier authorized but has no outcome evidence.</t></li>
+<li><t>indeterminate: The outcome cannot be determined. The verifier MUST keep the record open and MUST NOT permit blind retries.</t></li>
+<li><t>unknown: The invocation was recorded and the receipt was durably persisted, but the tool execution was interrupted before its result could be recorded. This is caused by a process crash, watchdog restart, hot-reload, or similar lifecycle event.</t></li>
+</ul>
+<t>INDETERMINATE and UNKNOWN are not additional verdicts. They are states on the executor lifecycle axis -- they describe what the verifier knows about the outcome after the verdict was issued, not the verdict itself.</t>
+<t>The distinction between indeterminate and unknown is structural. Indeterminate means the verifier lacks post-invocation visibility by design or by configuration. Unknown means the verifier knows the execution was interrupted before producing a durable result; the invocation did not complete under the verifier&#x27;s observation.</t>
+<t>The outcome_status is orthogonal to the verdict. A deny verdict is always confirmed. An allow verdict MAY be dispatched or indeterminate if the verifier has no post-invocation visibility.</t>
+<t>Severity and reconcilability are independent axes. A destructive write with authenticated callback is high-severity but reconcilable. A breaker trip with no telemetry is high-severity and indeterminate.</t>
+<section title="Scope-Comparison Axis" anchor="s-4.5.1">
+<t>The scope-comparison axis determines whether a verifier can evaluate a given profile. When a verifier cannot evaluate a profile, it produces an UNDECIDED result with a reason code:</t>
+<ul>
+<li><t>NO_COMPARISON_RELATION: No verifier in the deployment can evaluate this profile. The relying party MUST halt the comparison.</t></li>
+<li><t>PROFILE_NOT_HELD: This verifier does not hold the requested profile, but another verifier may. The relying party SHOULD consult other verifiers&#x27; capability manifests (Section 4.6) to find one that holds the profile.</t></li>
+</ul>
+<t>UNDECIDED is NOT a new top-level verdict. The top-level verdict remains {allow, deny, escalate}. UNDECIDED is a per-comparison result within the scope-comparison axis.</t>
+<t>Example comparison result:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "comparison_axis": {
+    "verdict": "UNDECIDED",
+    "reason": "PROFILE_NOT_HELD",
+    "requested_profile": "mcp-tls-1.3",
+    "verifier_profiles": ["mcp-plain", "mcp-tls-1.2"]
+  }
+}
+]]></sourcecode>
+<t>Reachable-Set Exhaustion:</t>
+<t>When a relying party receives PROFILE_NOT_HELD, it SHOULD consult other verifiers&#x27; manifests. If all reachable verifiers return PROFILE_NOT_HELD, the relying party MUST produce a SET_EXHAUSTED result:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "comparison_axis": {
+    "verdict": "UNDECIDED",
+    "reason": "SET_EXHAUSTED",
+    "requested_profile": "mcp-tls-1.3",
+    "queried_verifiers": [
+      {"verifier_id": "v1", "held_profiles": ["mcp-plain"]},
+      {"verifier_id": "v2", "held_profiles": ["mcp-tls-1.2"]}
+    ],
+    "reachable_set_exhausted": true
+  }
+}
+]]></sourcecode>
+<t>SET_EXHAUSTED is a terminal state. A downstream relying party with access to a larger verifier set MAY retry using the queried_verifiers trace to avoid redundant queries.</t>
+</section>
+<section title="Evidence Completeness (Third Axis)" anchor="s-4.5.2">
+<t>Evidence completeness is a real axis, but it does not have its own verdict token. A &quot;provisional&quot; or &quot;revisable&quot; verdict in the authorization layer is too easily read as &quot;soft allow,&quot; creating authorization-layer ambiguity.</t>
+<t>Instead, evidence completeness is implemented via the challenge loop (Section 4.7): when a verifier lacks sufficient evidence, it issues a deny verdict with a structured challenge field. This answers the third axis without introducing a new token.</t>
+<t>This also clarifies the boundary with INDETERMINATE: Verifier lacking records = evidence gap -&gt; fail-closed + challenge; Executor lacking records = INDETERMINATE on the outcome axis.</t>
+</section>
+</section>
+<section title="Verifier Capability Manifest" anchor="s-4.6">
+<t>A conforming verifier publishes a capability manifest declaring which profiles it can evaluate and what comparison scope it supports. The manifest is a signed, versioned JSON document.</t>
+<t>Manifest structure:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "manifest_version": "1.0",
+  "verifier_id": "ccs-verifier/1.1.7",
+  "profiles": [
+    {
+      "profile_id": "mcp-tls-1.2",
+      "capabilities": ["compare", "validate"],
+      "comparison_scope": ["mcp-plain", "mcp-tls-1.2"]
+    }
+  ],
+  "profiles_digest": "sha256:e3b0c44298fc1c14...",
+  "challenge_policy": {
+    "expected_response_duration": 10,
+    "deadline_multiplier": 3,
+    "max_deadline": 120
+  },
+  "signing_key_fingerprint": "ad989eaf1bb89fa8",
+  "published_at": 1786634576,
+  "expires_at": 1789226576,
+  "signature": "..."
+}
+]]></sourcecode>
+<t>Fields:</t>
+<ul>
+<li><t>manifest_version: Version of the manifest schema.</t></li>
+<li><t>verifier_id: Stable identifier of the verifier.</t></li>
+<li><t>profiles: Array of profiles the verifier can evaluate. Each profile declares its comparison scope.</t></li>
+<li><t>challenge_policy: Parameters for the challenge loop (Section 4.7).</t></li>
+<li><t>signing_key_fingerprint: SHA-256 fingerprint of the signing key.</t></li>
+<li><t>published_at, expires_at: Validity window.</t></li>
+<li><t>profiles_digest: SHA-256 digest of the canonical JSON representation of the profiles array.</t></li>
+</ul>
+<t>The profiles_digest enables a relying party to detect manifest staleness. A mismatch indicates the manifest has been updated since the receipt was issued; the relying party MUST re-query the verifier and re-evaluate.</t>
+<t>Discovery Protocol: A relying party queries the verifier capability manifest before issuing a comparison request.</t>
+<t>Binding: The manifest_hash (SHA-256 of the canonical manifest JSON) is included in the CCS receipt&#x27;s canonical configuration (Section 5.1), creating cryptographic linkage.</t>
+</section>
+<section title="Challenge Loop" anchor="s-4.7">
+<t>When a verifier lacks sufficient evidence to evaluate a dimension, it issues a deny verdict with a structured challenge field:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "verdict": "deny",
+  "block_reason": "evidence_incomplete",
+  "challenge": {
+    "missing": ["server_tls_certificate_chain", "mutual_auth_client_proof"],
+    "format": "pem",
+    "issued_at": 1786635000,
+    "expires_at": 1786635030,
+    "deadline_multiplier_applied": 3,
+    "base_duration": 10,
+    "derivation": "expires_at = issued_at + (base_duration x deadline_multiplier)"
+  }
+}
+]]></sourcecode>
+<t>Properties:</t>
+<ul>
+<li><t>Fail-closed: Evidence gap = deny. No provisional allow, no &quot;maybe.&quot;</t></li>
+<li><t>Actionable: The challenge field specifies exactly what evidence is missing and in what format.</t></li>
+<li><t>Derivation-based deadline with absolute binding: expires_at is derived as issued_at + (base_duration x deadline_multiplier), following OSPF/BGP convention.</t></li>
+<li><t>max_deadline cap: Prevents unbounded waits. The effective deadline is min(derived_deadline, max_deadline).</t></li>
+</ul>
+<t>Protocol:</t>
+<ol>
+<li><t>Issuer submits verification request.</t></li>
+<li><t>Verifier determines evidence is insufficient.</t></li>
+<li><t>Verifier returns deny + challenge specifying missing evidence.</t></li>
+<li><t>Issuer supplies missing evidence before expires_at.</t></li>
+<li><t>Verifier re-evaluates with complete evidence.</t></li>
+<li><t>If expires_at passes without response, the deny stands.</t></li>
+</ol>
+<section title="Substance vs. Form" anchor="s-4.7.1">
+<t>A recurring source of confusion in review is how much of a verifier&#x27;s internal rule engine must be exposed on the wire. This document draws an explicit line between substance and form.</t>
+<t>Substance refers to the verifier&#x27;s internal implementation: individual rule identifiers, numeric thresholds, pattern weights, heuristic labels, classifier versions, and vendor-specific classification logic. These are NOT required to appear in the receipt or to be standardised across implementations.</t>
+<t>Form refers to the receipt fields that another verifier needs to independently reproduce or audit the result: the canonical request hash, the canonical configuration hash, the verdict, the outcome_status, the dimension on which the verdict was reached, and the signature. These are normative.</t>
+<t>The config_hash binding (Section 5.3) is the mechanism by which substance is committed without being disclosed. This distinction applies throughout the document.</t>
+</section>
+<section title="Evidence Stack Alignment" anchor="s-4.7.2">
+<t>CCS receipts occupy one layer of a larger evidence stack. In deployment, the layers are:</t>
+<ul>
+<li><t>Layer 1 - Transport attestation: TLS channel bindings, WIMSE workload identities, OAuth token proofs.</t></li>
+<li><t>Layer 2 - CCS evidence (this document): what was requested, what was verified, what verdict was issued, under which canonical configuration.</t></li>
+<li><t>Layer 3 - Enforcement: the AEB or equivalent gate that consumes the receipt.</t></li>
+</ul>
+<t>Each layer provides distinct properties. The following properties are assigned explicitly:</t>
+<ul>
+<li><t>Channel confidentiality and server authentication: Layer 1.</t></li>
+<li><t>Workload/machine identity: Layer 1.</t></li>
+<li><t>Decision correctness under a stated configuration: Layer 2.</t></li>
+<li><t>Non-repudiation of the decision by the verifier: Layer 2 via Ed25519 signature.</t></li>
+<li><t>Allow/deny effect on the action: Layer 3.</t></li>
+<li><t>Post-action outcome observability: Layer 3 via outcome_status recorded back into the Layer 2 receipt.</t></li>
+</ul>
+<t>Implementations MUST NOT produce receipts that claim Layer 1 or Layer 3 properties as CCS assertions.</t>
+</section>
+<section title="No Disposition Authorises an Action" anchor="s-4.7.3">
+<t>Normative statement. Every verification disposition in CCS -- including verdict=allow, verdict=deny, verdict=escalate, UNDECIDED(any reason), outcome_status=indeterminate, and outcome_status=unknown -- is an evidence statement about what the verifier observed given the inputs and configuration it had. None of these dispositions is, by itself, an authorisation for the relying party to perform, continue, or abort the action.</t>
+<t>Consequences:</t>
+<ol>
+<li><t>A relying party MAY refuse an action even when the receipt verdict is allow.</t></li>
+<li><t>A relying party MUST be able to refuse an action when the receipt is UNDECIDED or INDETERMINATE.</t></li>
+<li><t>A deny verdict is an evidence statement that at least one dimension failed; it does not by itself require any particular remediation.</t></li>
+<li><t>Enforcement policy (Layer 3) is external to CCS.</t></li>
+</ol>
+<t>This resolves the recurring ambiguity in which &quot;verdict=allow&quot; could be read as &quot;the action is authorised.&quot; The verdict is one input into the relying party&#x27;s authorisation decision, not the decision itself.</t>
+</section>
+</section>
+<section title="Structural Test Discipline" anchor="s-4.8">
+<t>Each conformance rule in the CCS security rule set (the eight input rules SEC-001 through SEC-008 and the eight output rules OUT-001 through OUT-008) is expressed as a structural existence test. A structural test is one whose outcome depends only on the presence, absence, or literal shape of fields and values, and not on a qualitative judgement.</t>
+<t>For each rule, two positions are specified:</t>
+<ul>
+<li><t>Trigger: the exact structural condition under which the rule fires, expressed as a literal predicate over the canonical request.</t></li>
+<li><t>Scope: the exact set of inputs to which the rule applies, expressed as a closed enumeration or a literal membership test.</t></li>
+</ul>
+<t>Both positions MUST be free of implementer-judgement language. Appendix E lists the trigger and scope for each of the 16 rules.</t>
+</section>
+</section>
+
+<section title="Canonical Configuration" anchor="s-5">
+<section title="Canonical Config Fields" anchor="s-5.1">
+<t>A CCS Canonical Configuration is a JSON object that describes the exact state of the verifier at the time a receipt was issued. It MUST contain:</t>
+<table anchor="tbl-5">
+<name>Figure 5</name>
+<thead><tr><th align="left">Field</th><th align="left">Type</th><th align="left">Required</th><th align="left">Description</th></tr></thead>
+<tbody>
+<tr><td align="left">rules</td><td align="left">array of strings</td><td align="left">MUST</td><td align="left">Ordered list of rule names as registered.</td></tr>
+<tr><td align="left">policy_version</td><td align="left">string</td><td align="left">MUST</td><td align="left">Version identifier of the policy governing rule evaluation.</td></tr>
+<tr><td align="left">signing_key_id</td><td align="left">string</td><td align="left">MUST</td><td align="left">Identifier of the signing key used for this receipt.</td></tr>
+<tr><td align="left">verifier_version</td><td align="left">string</td><td align="left">MUST</td><td align="left">Software version of the verifier.</td></tr>
+<tr><td align="left">schema_version</td><td align="left">string</td><td align="left">MUST</td><td align="left">Version of the CCS receipt schema (e.g., &#x27;1.3&#x27;).</td></tr>
+<tr><td align="left">deployment_mode</td><td align="left">string (enum)</td><td align="left">MUST</td><td align="left">&#x27;in-process&#x27; or &#x27;out-of-process&#x27;.</td></tr>
+<tr><td align="left">manifest_hash</td><td align="left">string</td><td align="left">SHOULD</td><td align="left">SHA-256 hash of the verifier capability manifest (Section 4.6) at time of issuance.</td></tr>
+</tbody>
+</table>
+<t>Example canonical config:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "rules": ["ssrf_protection", "rce_protection", "credential_leak"],
+  "policy_version": "2026-08-01",
+  "signing_key_id": "key-2026-08-01-primary",
+  "verifier_version": "0.4.1",
+  "schema_version": "1.3",
+  "deployment_mode": "in-process",
+  "manifest_hash": "a1b2c3d4e5f6..."
+}
+]]></sourcecode>
+</section>
+<section title="Canonicalization Algorithm" anchor="s-5.2">
+<t>The canonical configuration MUST be serialized using JSON Canonicalization Scheme (JCS) as defined in <xref target="RFC8785"/>:</t>
+<sourcecode type="python"><![CDATA[
+import json
+
+def canonical_config(config: dict) -> bytes:
+    return json.dumps(
+        config,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False
+    ).encode("utf-8")
+]]></sourcecode>
+<t>Key properties:</t>
+<ul>
+<li><t>Keys are sorted lexicographically.</t></li>
+<li><t>No whitespace between tokens (compact form).</t></li>
+<li><t>Non-ASCII characters are emitted as UTF-8 per RFC 8785 JCS.</t></li>
+<li><t>NaN and Infinity are not permitted.</t></li>
+</ul>
+</section>
+<section title="Config Hash" anchor="s-5.3">
+<t>The config_hash is computed as:</t>
+<sourcecode type="python"><![CDATA[
+config_hash = hashlib.sha256(canonical_config(config)).hexdigest()
+]]></sourcecode>
+<t>The config_hash MUST be included in the extended signing payload (Section 4.2) when the extended fields are in use. This binds the receipt to the exact rule set and policy version, preventing a verifier from being reconfigured after issuing a receipt and having the old receipt still validate under the new configuration.</t>
+</section>
+</section>
+
+<section title="Bindings" anchor="s-6">
+<t>This section defines the nine binding mechanisms that connect a CCS receipt to the various elements of the invocation lifecycle. Together these bindings make the receipt a self-contained evidence artifact: a verifier given the receipt and the bound inputs can independently reproduce the result without consulting the issuing system. The same set of bindings also aligns with the native-artifact requirements discussed in the related Action Evidence Boundary work <xref target="I-D.schrock-action-evidence-boundary" format="title"/>, which is cited for cross-ecosystem alignment only.</t>
+<section title="request_hash Binding" anchor="s-6.1">
+<t>Purpose: Bind the receipt to the exact request bytes as received by the verifier.</t>
+<t>Mechanism:</t>
+<t>The verifier MUST compute request_hash as the SHA-256 digest of the canonical bytes of the request that triggered verification:</t>
+<sourcecode type="python"><![CDATA[
+def canonical_bytes(command) -> bytes:
+    return json.dumps({
+        "agent_id": command.agent_id,
+        "tool": command.tool,
+        "params": command.params,
+        "timestamp": command.timestamp,
+        "trace_id": command.trace_id,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+request_hash = "sha256:" + hashlib.sha256(canonical_bytes(command)).hexdigest()
+]]></sourcecode>
+<t>Binding strength: The request_hash changes if any material field of the request changes.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="response_hash Binding" anchor="s-6.2">
+<t>Purpose: Bind the receipt to the exact response produced by the tool invocation.</t>
+<t>Mechanism: After the tool is invoked, the verifier (or a post-invocation hook) MUST compute:</t>
+<sourcecode type="python"><![CDATA[
+response_hash = "sha256:" + hashlib.sha256(response_bytes).hexdigest()
+]]></sourcecode>
+<t>Where response_bytes is the exact byte representation of the tool&#x27;s response. For structured responses, the canonical JSON serialization MUST be used.</t>
+<t>Timing: The response_hash MUST be computed after the tool invocation completes. See Section 4.2 (Receipt lifecycle) for the two-phase durability model.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="runtime_context_hash Binding" anchor="s-6.3">
+<t>Purpose: Bind the receipt to the runtime execution environment.</t>
+<t>Mechanism: The runtime context is a JSON object containing environment-scoped fields (caller_identity, tenant, environment, etc.).</t>
+<sourcecode type="python"><![CDATA[
+context_bytes = json.dumps(context, sort_keys=True, separators=(",", ":")).encode("utf-8")
+runtime_context_hash = "sha256:" + hashlib.sha256(context_bytes).hexdigest()
+]]></sourcecode>
+<t>Binding strength: Prevents a receipt issued in one environment from being replayed in another.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="action Binding" anchor="s-6.4">
+<t>Purpose: Provide a stable action identifier that binds the receipt to the exact tool action and canonical parameters, and that can be matched by an external enforcement consumer.</t>
+<t>Mechanism:</t>
+<sourcecode type="text"><![CDATA[
+action = "ccs:tool-invoke:{tool_name}:{params_hash}"
+]]></sourcecode>
+<t>Where {tool_name} is the tool name from the Command and {params_hash} is the full SHA-256 hex digest (not truncated) of the canonical parameters.</t>
+<t>This document normatively requires only the identifier construction above: the string deterministically combines the tool name with the full canonical-parameter digest, so two receipts for the same tool and identical parameters carry the same action value. Mapping the CCS action value onto an external action taxonomy (for example, a Canonical Action Identifier (CAID) action type, or the action-matching process used by an Action Evidence Boundary enforcement consumer) is OPTIONAL and is performed by a relying-party-pinned mapping profile outside this specification; CCS does not depend on either external mechanism. CAID and AEB are referenced for that optional mapping only (<xref target="I-D.schrock-canonical-action-identifier"/>, <xref target="I-D.schrock-action-evidence-boundary"/>).</t>
+<t>Status: Implemented in ccs-verifier 0.4.1 (14 enum values).</t>
+</section>
+<section title="params_hash Binding" anchor="s-6.5">
+<t>Purpose: Bind the receipt to the exact tool parameters.</t>
+<t>Mechanism (Implemented in 0.4.1):</t>
+<sourcecode type="python"><![CDATA[
+def params_hash(params: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(params, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+]]></sourcecode>
+<t>The 0.4.1 implementation truncates to 16 hex characters (64 bits). This provides collision resistance of approximately 2^32 under birthday attack, which is sufficient for audit uniqueness within a single verifier instance but MAY be insufficient for cross-verifier replay prevention in high-volume deployments.</t>
+<t>Recommendation: Implementations targeting conformance Level 2 or above SHOULD use the full 64-character SHA-256 hex digest.</t>
+<t>Status: Implemented (16-char truncation) in 0.4.1.</t>
+</section>
+<section title="issuer Binding" anchor="s-6.6">
+<t>Purpose: Identify the verifier that produced the receipt.</t>
+<t>Mechanism: The issuer field is a URI that identifies the verifier instance. The URI MUST be stable across key rotations. The issuer identifier MUST be covered by the signing mechanism so that an attacker cannot substitute a different issuer without invalidating the receipt.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="audience Binding" anchor="s-6.7">
+<t>Purpose: Identify the intended consumer of the receipt, preventing receipt misdirection.</t>
+<t>Mechanism: The audience field is a URI that identifies the intended recipient. A receipt whose audience does not match the consumer MUST be rejected.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="nonce/sequence Binding" anchor="s-6.8">
+<t>Purpose: Prevent replay of previously-issued receipts.</t>
+<t>Mechanism: The nonce field is a cryptographically random, single-use value:</t>
+<sourcecode type="python"><![CDATA[
+nonce = secrets.token_hex(16)
+]]></sourcecode>
+<t>The sequence field is a monotonically increasing integer counter scoped to the issuer.</t>
+<t>Anti-replay enforcement:</t>
+<ul>
+<li><t>The consumer MUST maintain a replay cache of seen (issuer, nonce) pairs.</t></li>
+<li><t>A receipt with a previously-seen nonce MUST be rejected.</t></li>
+<li><t>The replay cache MUST persist across process restarts.</t></li>
+<li><t>The sequence field provides an additional ordering guarantee.</t></li>
+</ul>
+<t>Status: Implemented in ccs-verifier 0.4.1 (UUID4-based nonce).</t>
+</section>
+<section title="freshness Binding (issued_at + expires_at + max_clock_skew)" anchor="s-6.9">
+<t>Purpose: Bound the temporal validity of the receipt.</t>
+<t>Mechanism: Three fields work together to enforce freshness:</t>
+<ul>
+<li><t>issued_at: Unix timestamp when the receipt was issued.</t></li>
+<li><t>expires_at: Unix timestamp after which the receipt MUST NOT be accepted.</t></li>
+<li><t>max_clock_skew: Maximum acceptable clock skew in seconds. Default: 30.0 seconds.</t></li>
+</ul>
+<t>Validation algorithm:</t>
+<sourcecode type="python"><![CDATA[
+def check_freshness(receipt, local_time, max_clock_skew=30.0):
+    skew = receipt.max_clock_skew or 30.0
+    if local_time < receipt.issued_at - skew:
+        return False
+    if local_time > receipt.expires_at + skew:
+        return False
+    return True
+]]></sourcecode>
+<t>Recommended expiry: For tool-invocation governance, an expires_at of issued_at + 60 seconds is RECOMMENDED.</t>
+<t>Status: Implemented in ccs-verifier 0.4.1.</t>
+</section>
+<section title="Receipt Time-Binding" anchor="s-6.10">
+<t>A CCS receipt captures the verification moment -- not merely &quot;was this approved&quot; but &quot;when was this verified and what was the evidence at that moment.&quot; The timestamp, verified_at, issued_at, and expires_at fields together establish a temporal context that enables retroactive reconciliation.</t>
+<t>This design supports the following temporal authorization properties:</t>
+<ul>
+<li><t>Verification-moment binding: The receipt attests to the state of knowledge at the time of verification.</t></li>
+<li><t>Post-hoc reconciliation: When new evidence arrives, the receipt can be correlated using the trace_id and timestamp.</t></li>
+<li><t>Durable record: The receipt survives transport, retries, and principal changes.</t></li>
+</ul>
+</section>
+</section>
+
+<section title="Key Management" anchor="s-7">
+<t>CCS distinguishes two orthogonal security goals that a signed receipt can provide, and structures key management around both rather than conflating them:</t>
+<ul>
+<li><t>Integrity and key/signature consistency (VERIFIED): any party can determine, from the receipt alone, that no signed field has been altered and that the signature is consistent with the public key bound in the receipt. This establishes self-contained integrity, not who signed it.</t></li>
+<li><t>Issuer authentication (ACCEPTED): a relying party (RP) establishes that the receipt was signed by a specific, previously authorized issuer, by pinning that issuer&apos;s public key or fingerprint out of band.</t></li>
+</ul>
+<t>VERIFIED is self-contained and needs no prior arrangement; ACCEPTED is a strictly stronger, optional layer that builds on VERIFIED. Both MAY be present for the same receipt.</t>
+<section title="Key Generation" anchor="s-7.1">
+<t>HMAC-SHA256: The signing key MUST be generated using a cryptographically secure random number generator:</t>
+<sourcecode type="python"><![CDATA[
+signing_key = secrets.token_bytes(32)
+]]></sourcecode>
+<t>The key MUST NOT be derived from predictable sources (timestamps, process IDs, weak PRNGs).</t>
+<t>Ed25519 (RFC 8032): For deployments where the verifier and consumer are in separate trust domains, Ed25519 key pairs SHOULD be used. The private key signs the receipt; the corresponding public key MAY either be embedded in the receipt (Section 7.2) for self-contained verification, or distributed out of band when the RP performs issuer authentication.</t>
+</section>
+<section title="Key Distribution and the Two Trust Levels" anchor="s-7.2">
+<t>A receipt is associated with one of two trust levels:</t>
+<ul>
+<li><t>VERIFIED: The signature is cryptographically valid against the public key bound in the receipt, over the canonical serialization (RFC 8785 JCS) of every signed field. Any third party MAY reach VERIFIED fully offline, with no network access and no prior enrollment.</t></li>
+<li><t>ACCEPTED: In addition to VERIFIED, the bound public key (or its fingerprint) matches an issuer the RP has pinned out of band. ACCEPTED is the only level that authenticates the signer.</t></li>
+</ul>
+<t>The rules below distinguish symmetric (HMAC) and asymmetric (Ed25519) keys:</t>
+<ul>
+<li><t>HMAC: The shared secret MUST be distributed via a secure channel and MUST NOT be transmitted in-band with the receipt. Because the same secret both produces and verifies the signature, HMAC receipts cannot be verified by arbitrary third parties and do not provide a self-contained VERIFIED level to outsiders.</t></li>
+<li><t>Ed25519:</t>
+<ol>
+<li><t>To support self-contained, offline verification, the receipt SHOULD embed the issuer public key. With the embedded key, any party can establish VERIFIED without out-of-band enrollment.</t></li>
+<li><t>Relying parties that require issuer authentication MUST additionally pin the expected public key or its fingerprint out of band and accept the receipt at ACCEPTED only when the bound key matches the pin. The key fingerprint (SHA-256 of the raw public key bytes) SHOULD be used as the signing key identifier.</t></li>
+<li><t>The embedded public_key, public_key_fingerprint, and signing_algorithm fields MUST all be covered by the signature. As a result, the embedded public key cannot be substituted and the signing algorithm cannot be downgraded by an in-transit adversary.</t></li>
+</ol>
+</li>
+</ul>
+<t>Embedding the public key does NOT, by itself, authenticate the issuer: any party can generate a self-consistent, self-signed receipt that reaches VERIFIED. Relying parties MUST NOT treat VERIFIED as proof of who signed. Out-of-band pinning (ACCEPTED) is required for issuer authentication.</t>
+</section>
+<section title="Key Rotation" anchor="s-7.3">
+<t>Key rotation MUST follow a phased approach:</t>
+<ol>
+<li><t>Announce: The verifier publishes the new key identifier and effective date.</t></li>
+<li><t>Dual-sign: During the overlap window, receipts are signed with both old and new keys.</t></li>
+<li><t>Cutover: After the overlap window, only the new key is used.</t></li>
+<li><t>Retire: The old key is retired after all receipts signed under it have expired (per expires_at).</t></li>
+</ol>
+<t>The overlap window MUST be at least 2x the maximum receipt lifetime (expires_at - issued_at). When receipts embed their public key, rotation does not require prior key enrollment by verifiers; RPs that pin keys for ACCEPTED MUST be notified of the new fingerprint during the Announce phase.</t>
+</section>
+<section title="Verifier-Operator Separation" anchor="s-7.4">
+<t>A fundamental security property of CCS is the separation between the verifier (which evaluates rules and signs receipts) and the operator (the agent runtime that invokes tools).</t>
+<ul>
+<li><t>In-process: The verifier and operator share the same address space. A compromised agent process CAN access the signing key. This is a known limitation.</t></li>
+<li><t>Out-of-process: The verifier runs in a separate process with its own memory space. The signing key is held only in the verifier process. A compromised agent process CANNOT access the signing key. This is the RECOMMENDED deployment mode for security-critical applications.</t></li>
+</ul>
+</section>
+</section>
+
+<section title="Transport Requirements" anchor="s-8">
+<section title="Fail-Closed Semantics" anchor="s-8.1">
+<t>CCS enforcement MUST be fail-closed. This is the core security guarantee, derived from the formal framework <xref target="CCS-FORMAL"/> and implemented in the reference implementation.</t>
+<t>Requirement: If the verifier raises an exception, times out, returns an ambiguous result, or is unreachable, the tool invocation MUST be blocked.</t>
+<t>Implementation in 0.4.1:</t>
+<sourcecode type="python"><![CDATA[
+def govern(fn, policy="default"):
+    def wrapper(*args, **kwargs):
+        try:
+            result = verifier.verify(command)
+            if not result.allowed:
+                raise PermissionError(result.block_reason)
+        except Exception:
+            raise PermissionError("Verification failed")
+        return fn(*args, **kwargs)
+    return wrapper
+]]></sourcecode>
+<t>This is the fundamental difference from observer-pattern hooks (which fail-open when the observer crashes, as documented in <xref target="CWE-636"/>).</t>
+</section>
+<section title="Timeout Behavior" anchor="s-8.2">
+<t>Verifier timeout: If the verifier does not respond within the configured timeout (default: 5000ms for out-of-process, unlimited for in-process), the invocation MUST be blocked.</t>
+<t>Receipt timeout: The expires_at field (Section 6.9) provides an upper bound on receipt validity.</t>
+<t>Both timeouts are independent and both MUST be enforced.</t>
+</section>
+<section title="In-Process vs Out-of-Process Deployment" anchor="s-8.3">
+<table anchor="tbl-6">
+<name>Figure 6</name>
+<thead><tr><th align="left">Property</th><th align="left">In-Process</th><th align="left">Out-of-Process</th></tr></thead>
+<tbody>
+<tr><td align="left">Process boundary</td><td align="left">None (shared address space)</td><td align="left">Full (separate process)</td></tr>
+<tr><td align="left">Signing key exposure</td><td align="left">Vulnerable to agent compromise</td><td align="left">Protected from agent compromise</td></tr>
+<tr><td align="left">Crash isolation</td><td align="left">None (shared crash domain)</td><td align="left">Full (verifier survives agent crash)</td></tr>
+<tr><td align="left">Latency</td><td align="left">7.5us P50 (measured, 1000 iterations)</td><td align="left">OOP Unix-socket P50 ~133us / TCP+TLS P50 ~200us (measured)</td></tr>
+<tr><td align="left">Implementation status</td><td align="left">Implemented + tested (0.4.1)</td><td align="left">Implemented + tested (0.4.1)</td></tr>
+<tr><td align="left">Conformance level</td><td align="left">Level 0-1</td><td align="left">Level 2-3</td></tr>
+</tbody>
+</table>
+<t>Note on performance: The P50/P99 latency figures above are informational measurements from the reference implementation. They are not normative requirements.</t>
+</section>
+</section>
+
+<section title="Verifier Source Classification" anchor="s-9">
+<t>This section classifies verifiers by their provenance and the level of assurance a relying party SHOULD place in their verdicts.</t>
+<section title="Class A: Self-Built Verifier" anchor="s-9.1">
+<t>A verifier whose rule set, signing key, and configuration are built, operated, and audited entirely by the relying party&#x27;s own organization.</t>
+<ul>
+<li><t>Full visibility into source code, rule definitions, and key management.</t></li>
+<li><t>Independent verification of fail-closed semantics is possible.</t></li>
+<li><t>The signing key is generated and held within the relying party&#x27;s infrastructure.</t></li>
+</ul>
+<t>Assurance: Highest.</t>
+<t>EC mapping: A Class A verifier&#x27;s receipt is directly consumable as a policy-permit evidence component in an EC.</t>
+</section>
+<section title="Class B: Audited Verifier" anchor="s-9.2">
+<t>A verifier built by a third party but subjected to independent audit.</t>
+<ul>
+<li><t>The source code is available for review.</t></li>
+<li><t>An independent audit has verified the implementation matches the specification, particularly fail-closed semantics.</t></li>
+<li><t>The audit report is available to the relying party.</t></li>
+</ul>
+<t>Assurance: High, contingent on audit scope and freshness.</t>
+</section>
+<section title="Class C: Self-Declared Verifier" anchor="s-9.3">
+<t>A verifier whose operator claims conformance to CCS but has not submitted to independent audit.</t>
+<ul>
+<li><t>The operator declares conformance. No independent verification.</t></li>
+<li><t>The relying party has no direct evidence of correct fail-closed semantics.</t></li>
+</ul>
+<t>Assurance: Low.</t>
+<t>EC mapping: A Class C verifier&#x27;s receipt MAY be consumed as evidence, but the relying party SHOULD weight it lower than Class A or Class B.</t>
+</section>
+</section>
+
+<section title="Conformance Levels" anchor="s-10">
+<section title="Level 0-3 Definitions" anchor="s-10.1">
+<t>Level 0 -- Baseline (Implemented in 0.4.1):</t>
+<t>The verifier produces a signed receipt covering: trace_id, verdict, timestamp, tool, params_hash, rule_summary. Fail-closed enforcement is implemented. In-process deployment only.</t>
+<t>A Level 0 implementation satisfies the core tamper-evident audit requirement but does not provide the bindings necessary for EC composition.</t>
+<t>Level 1 -- Extended Bindings + Ed25519 Signing (Implemented in v0.4.1):</t>
+<t>In addition to Level 0, the verifier produces receipts with all 22 fields: request_hash, config_hash, response_hash, runtime_context_hash, action (CAID-compatible, 14 enum values), issuer, audience, nonce (UUID4-based), sequence, issued_at, expires_at, max_clock_skew, and signature. Ed25519 signing is supported as the primary signature algorithm alongside HMAC-SHA256.</t>
+<t>A Level 1 implementation provides all 22 fields required for EC composition, with Ed25519 signatures providing non-repudiation.</t>
+<t>Level 2 -- Out-of-Process Full Isolation:</t>
+<t>In addition to Level 1, the verifier operates out-of-process with Unix-socket or TCP+TLS transport. The signing key is held only in the verifier process. Cross-replica replay prevention is implemented via shared durable state.</t>
+<t>Level 3 -- Multi-Hop Verification:</t>
+<t>In addition to Level 2, the verifier supports chain-of-custody verification across multiple executor hops. Each hop produces its own receipt with local audience binding.</t>
+</section>
+<section title="Level 4: Evidence Propagation" anchor="s-10.2">
+<t>Level 4 -- Evidence Propagation:</t>
+<t>In addition to Level 3, the verifier supports cross-organization evidence propagation with chain integrity verification. The verifier produces Evidence Envelopes, maintains Evidence Chains, and supports offline chain verification.</t>
+<t>Level 4 requirements:</t>
+<ul>
+<li><t>Evidence Intake Protocol compliance (Section 3).</t></li>
+<li><t>Evidence Propagation support (Section 11).</t></li>
+<li><t>Enforcement Interface compliance (Section 12).</t></li>
+<li><t>Cross-org Evidence Profile support.</t></li>
+<li><t>Chain integrity verification (full and spot).</t></li>
+<li><t>EC summary hash computation.</t></li>
+</ul>
+<t>A Level 4 implementation provides the highest assurance. Backward compatibility: All Level 0-3 implementations remain conformant. Level 4 is additive.</t>
+</section>
+<section title="Conformance Vectors" anchor="s-10.3">
+<t>Each conformance vector is a self-contained test case that a conforming implementation MUST pass.</t>
+<dl>
+<dt>CV-001: Basic ALLOW receipt (Level 0)</dt><dd>Input Command: agent_id: &quot;test-agent&quot;, tool: &quot;search_web&quot;, params: {&quot;query&quot;: &quot;weather in Tokyo&quot;}. Expected: verdict: &quot;allow&quot;, receipt: valid HMAC-SHA256 over the signed bytes.</dd>
+<dt>CV-002: Basic DENY receipt (Level 0)</dt><dd>Input Command: tool: &quot;shell_exec&quot;, params: {&quot;command&quot;: &quot;rm -rf /&quot;}. Expected: verdict: &quot;deny&quot;, block_reason: non-empty, receipt: valid HMAC-SHA256 covering the deny verdict.</dd>
+<dt>CV-003: Config hash binding (Level 1)</dt><dd>Given two verifiers with different rule sets, when they verify the same command, then their config_hash values MUST differ.</dd>
+<dt>CV-004: Request hash binding (Level 1)</dt><dd>Given the same tool and rule set, when two commands differ only in params, then their request_hash values MUST differ.</dd>
+<dt>CV-005: Issuer/audience binding (Level 2)</dt><dd>Given a receipt with issuer=&quot;A&quot; and audience=&quot;B&quot;, when consumer &quot;C&quot; receives the receipt, then consumer &quot;C&quot; MUST reject the receipt.</dd>
+<dt>CV-006: Freshness enforcement (Level 2)</dt><dd>Given a receipt with expires_at=T, when consumer receives the receipt at time T+1, then the consumer MUST reject the receipt.</dd>
+<dt>CV-007: Intake fail-closed (Level 4)</dt><dd>Given a malformed intake message, when submitted, then the verifier MUST return an INTAKE_MISSING_FIELD error, and no receipt MUST be produced.</dd>
+<dt>CV-008: Evidence Envelope propagation (Level 4)</dt><dd>Given a valid receipt from Agent A, when Agent A delegates to Agent B, then Agent B MUST receive an Evidence Envelope and produce its own receipt.</dd>
+<dt>CV-009: Cross-org self-contained verification (Level 4)</dt><dd>The envelope MUST contain all data necessary for verification without external lookups.</dd>
+<dt>CV-010: EC summary hash (Level 4)</dt><dd>The summary hash MUST be the SHA-256 digest of the concatenation of all receipt hashes in insertion order.</dd>
+</dl>
+</section>
+</section>
+
+<section title="Evidence Propagation" anchor="s-11">
+<t>This section defines how evidence flows through multi-agent chains, across organizational boundaries, and accumulates across execution stages. It establishes &quot;chain sovereignty.&quot;</t>
+<section title="Single-Agent Propagation" anchor="s-11.1">
+<t>Within a single agent, evidence flows through a defined pipeline: Intake -&gt; Verification -&gt; Receipt Emission -&gt; Local Storage.</t>
+<t>Local evidence store interface: The agent MUST maintain a local evidence store with the following properties:</t>
+<ul>
+<li><t>Append-only: Receipts, once written, MUST NOT be modified or deleted.</t></li>
+<li><t>Indexed: Receipts MUST be indexed by trace_id for retrieval.</t></li>
+<li><t>Durable: Receipts MUST be persisted to stable storage before the tool invocation proceeds.</t></li>
+</ul>
+<t>Query interface: The local evidence store MUST support querying by trace_id, tool, verdict, and time_range.</t>
+<t>Ordering guarantee: The admission decision (pre-execution fields and verdict, as enumerated in Section 4.2, Receipt lifecycle) MUST be durable within the agent&#x27;s local store before the tool invocation proceeds. The full 22-field receipt, including response_hash and field 22, is finalized after execution and then MUST be durably persisted.</t>
+<section title="Zero-Hop Chain Semantics" anchor="s-11.1.1">
+<t>A delegation chain has length zero when an agent acts on its own behalf with no upstream principal -- there is no delegator, no forwarded grant, and no prior receipt to inherit.</t>
+<t>Chain length 0 is a valid, non-error state. A conforming implementation MUST NOT require an upstream receipt at chain length 0 and MUST NOT treat a missing previous_receipt_hash as a verification failure.</t>
+<t>At chain length 0, the CCS receipt&#x27;s own issuance event serves as the root of trust. Concretely, for a length-0 receipt:</t>
+<ul>
+<li><t>previous_receipt_hash MUST be absent or an explicit zero value agreed by the profile.</t></li>
+<li><t>hop_count MUST be 0.</t></li>
+<li><t>chain_id MAY equal the receipt&#x27;s own nonce.</t></li>
+<li><t>The verifier MUST evaluate every requested dimension on the request itself.</t></li>
+<li><t>The &quot;No disposition authorises an action&quot; rule (Section 4.7.3) applies unchanged.</t></li>
+</ul>
+<t>When a length-0 agent later delegates to another agent, the next receipt has hop_count=1 and previous_receipt_hash set to the length-0 receipt&#x27;s hash.</t>
+</section>
+</section>
+<section title="Multi-Agent Chain Propagation" anchor="s-11.2">
+<t>When Agent A delegates a task to Agent B, evidence MUST propagate with the delegation.</t>
+<t>Evidence Envelope:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "envelope_version": "1.3",
+  "original_receipt": { ... },
+  "parent_trace_id": "a1b2c3d4e5f67890",
+  "child_trace_id": "b2c3d4e5f6789012",
+  "delegation_reason": "search requires domain-specific search",
+  "hop_count": 1,
+  "previous_receipt_hash": "sha256:abc123..."
+}
+]]></sourcecode>
+<t>Fields:</t>
+<ul>
+<li><t>envelope_version: The Evidence Envelope schema version. MUST be &quot;1.3&quot;.</t></li>
+<li><t>original_receipt: The complete CCS Receipt from the delegating agent.</t></li>
+<li><t>parent_trace_id: The trace_id of the delegating agent&#x27;s verification.</t></li>
+<li><t>child_trace_id: The trace_id assigned to the receiving agent&#x27;s verification.</t></li>
+<li><t>delegation_reason: Human-readable reason for the delegation.</t></li>
+<li><t>hop_count: The number of hops this evidence has traversed.</t></li>
+<li><t>previous_receipt_hash: The SHA-256 hash of the delegating agent&#x27;s receipt.</t></li>
+</ul>
+<t>Propagation protocol:</t>
+<ol>
+<li><t>Agent A receives a tool invocation request.</t></li>
+<li><t>Agent A&#x27;s verifier evaluates and produces Receipt_A.</t></li>
+<li><t>Agent A delegates to Agent B, wrapping Receipt_A in an Evidence Envelope.</t></li>
+<li><t>Agent B submits through its own intake (Section 3).</t></li>
+<li><t>Agent B&#x27;s verifier produces Receipt_B with previous_receipt_hash set to hash(Receipt_A).</t></li>
+<li><t>Agent B MAY further delegate.</t></li>
+</ol>
+<t>Maximum chain depth: Implementations SHOULD enforce a maximum hop_count of 16.</t>
+</section>
+<section title="Cross-Organization Propagation" anchor="s-11.3">
+<t>When evidence crosses organizational boundaries, additional requirements apply.</t>
+<t>Cross-Organization Evidence Profile: Cross-org evidence MUST include all of the following fields:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "envelope_version": "1.3",
+  "original_receipt": { ... },
+  "parent_trace_id": "...",
+  "child_trace_id": "...",
+  "delegation_reason": "...",
+  "hop_count": 2,
+  "previous_receipt_hash": "sha256:...",
+  "cross_org": {
+    "sender_org_id": "https://org-a.example.com",
+    "receiver_org_id": "https://org-b.example.com",
+    "trust_anchor_reference": "sha256:key-fingerprint...",
+    "self_contained": true
+  }
+}
+]]></sourcecode>
+<t>Requirements:</t>
+<ul>
+<li><t>sender_org_id: Identifier of the sending organization. MUST be a stable URI.</t></li>
+<li><t>receiver_org_id: Identifier of the receiving organization. MUST be a stable URI.</t></li>
+<li><t>trust_anchor_reference: SHA-256 fingerprint of the public key used to verify the receipt&#x27;s signature.</t></li>
+<li><t>self_contained: MUST be true. All verification data is included in the envelope; no external lookups are required.</t></li>
+</ul>
+<t>Self-containment requirement: Cross-org evidence MUST be self-validating. The receiving organization MUST NOT need to make network calls to validate the evidence.</t>
+</section>
+<section title="Evidence Accumulation" anchor="s-11.4">
+<t>As evidence propagates through a chain, it accumulates. Each hop adds its receipt to the chain.</t>
+<t>Evidence Chain (EC) structure:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "aec_version": "1.3",
+  "chain_id": "sha256:...",
+  "receipts": [
+    {"receipt": {...}, "hop": 0, "receipt_hash": "sha256:..."},
+    {"receipt": {...}, "hop": 1, "receipt_hash": "sha256:...", "previous_receipt_hash": "sha256:..."},
+    {"receipt": {...}, "hop": 2, "receipt_hash": "sha256:...", "previous_receipt_hash": "sha256:..."}
+  ],
+  "summary_hash": "sha256:...",
+  "total_hops": 2
+}
+]]></sourcecode>
+<t>Ordering: EC MUST maintain insertion order. No reordering is permitted.</t>
+<t>Pruning: EC MUST support pruning -- the removal of intermediate receipts while preserving chain integrity.</t>
+<t>Summary hash computation:</t>
+<sourcecode type="text"><![CDATA[
+summary_input = receipt_hash_0 || receipt_hash_1 || ... || receipt_hash_n
+summary_hash = SHA-256(summary_input)
+]]></sourcecode>
+<t>Any change to any receipt in the chain produces a different summary hash.</t>
+</section>
+<section title="Chain Integrity Verification" anchor="s-11.5">
+<t>Full verification: To verify the entire chain, for each receipt verify the signature, freshness, and chain linkage (if hop &gt; 0), then verify the summary hash.</t>
+<t>Spot verification: To verify a subset of the chain, verify the receipt at the specified hop, the chain linkage, and the summary hash.</t>
+<t>Chain Verification Result:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "chain_valid": true,
+  "broken_at": null,
+  "missing_hops": [],
+  "total_hops": 2,
+  "verification_mode": "full"
+}
+]]></sourcecode>
+<t>If the chain is broken:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "chain_valid": false,
+  "broken_at": 1,
+  "missing_hops": [],
+  "total_hops": 2,
+  "verification_mode": "full",
+  "failure_reason": "previous_receipt_hash mismatch at hop 1"
+}
+]]></sourcecode>
+<t>Offline verification: Chain verification MUST be possible offline (no network calls required). This is consistent with the self-containment requirement for cross-org evidence (Section 11.3).</t>
+</section>
+</section>
+
+<section title="Enforcement Interface" anchor="s-12">
+<t>This section defines how evidence is consumed by enforcement systems (such as AEB). It establishes &quot;ecosystem sovereignty.&quot;</t>
+<section title="Enforcement Input Contract" anchor="s-12.1">
+<t>The enforcement input contract specifies the standard interface through which enforcement systems consume CCS evidence.</t>
+<t>Single receipt input -- Required for enforcement consumption:</t>
+<ul>
+<li><t>verdict: The governance decision (allow/deny/escalate).</t></li>
+<li><t>signature: The cryptographic signature (Ed25519 or HMAC).</t></li>
+<li><t>action: The CAID-compatible action identifier.</t></li>
+<li><t>params_hash: Hash of the tool parameters.</t></li>
+<li><t>issuer: Identifier of the producing verifier.</t></li>
+<li><t>audience: Identifier of the intended consumer.</t></li>
+<li><t>issued_at / expires_at / max_clock_skew: Freshness parameters.</t></li>
+<li><t>nonce: Anti-replay value.</t></li>
+</ul>
+<t>Optional for enforcement consumption:</t>
+<ul>
+<li><t>response_hash: Hash of the tool response.</t></li>
+<li><t>runtime_context_hash: Hash of the execution environment.</t></li>
+<li><t>chain_metadata: Evidence Envelope and EC information.</t></li>
+<li><t>outcome_status: The epistemic state (confirmed/dispatched/indeterminate/unknown).</t></li>
+</ul>
+<t>EC input: When consuming an Evidence Chain, the enforcement system receives the full EC structure (Section 11.4) and can additionally expect summary_hash and total_hops.</t>
+</section>
+<section title="Receipt Validation Protocol" anchor="s-12.2">
+<t>Enforcement systems MUST follow this step-by-step validation protocol. Each step is independent; failure at any step produces a specific rejection reason.</t>
+<t>Step 1: Freshness check.</t>
+<sourcecode type="python"><![CDATA[
+if local_time > receipt.expires_at + receipt.max_clock_skew:
+    return REJECT("FRESHNESS_EXPIRED")
+if local_time < receipt.issued_at - receipt.max_clock_skew:
+    return REJECT("FRESHNESS_EXPIRED")
+]]></sourcecode>
+<t>Step 2: Audience check.</t>
+<sourcecode type="python"><![CDATA[
+if receipt.audience != self.identity:
+    return REJECT("AUDIENCE_MISMATCH")
+]]></sourcecode>
+<t>Step 3: Signature verification.</t>
+<sourcecode type="python"><![CDATA[
+if not verify_signature(receipt, trusted_keys[receipt.issuer]):
+    return REJECT("SIGNATURE_INVALID")
+]]></sourcecode>
+<t>Step 4: Replay check.</t>
+<sourcecode type="python"><![CDATA[
+if (receipt.issuer, receipt.nonce) in replay_cache:
+    return REJECT("REPLAY_DETECTED")
+replay_cache.add((receipt.issuer, receipt.nonce))
+]]></sourcecode>
+<t>Step 5: Binding verification.</t>
+<sourcecode type="python"><![CDATA[
+if receipt.action != expected_action:
+    return REJECT("BINDING_MISMATCH")
+if receipt.params_hash != compute_params_hash(current_params):
+    return REJECT("BINDING_MISMATCH")
+]]></sourcecode>
+<t>Step 6: Outcome status mapping (Section 12.4).</t>
+</section>
+<section title="Verification Failure Signaling" anchor="s-12.3">
+<t>When validation fails, the enforcement system signals the failure using a defined taxonomy.</t>
+<table anchor="tbl-7">
+<name>Figure 7</name>
+<thead><tr><th align="left">Failure Category</th><th align="left">Severity</th><th align="left">Enforcement Action</th></tr></thead>
+<tbody>
+<tr><td align="left">FRESHNESS_EXPIRED</td><td align="left">CRITICAL</td><td align="left">MUST deny. Receipt is outside its validity window.</td></tr>
+<tr><td align="left">AUDIENCE_MISMATCH</td><td align="left">CRITICAL</td><td align="left">MUST deny. Receipt is not intended for this consumer.</td></tr>
+<tr><td align="left">SIGNATURE_INVALID</td><td align="left">CRITICAL</td><td align="left">MUST deny. Receipt cryptographic integrity is compromised.</td></tr>
+<tr><td align="left">REPLAY_DETECTED</td><td align="left">CRITICAL</td><td align="left">MUST deny. Receipt has been previously consumed.</td></tr>
+<tr><td align="left">BINDING_MISMATCH</td><td align="left">CRITICAL</td><td align="left">MUST deny. Receipt does not match the current request.</td></tr>
+<tr><td align="left">OUTCOME_INDETERMINATE</td><td align="left">WARNING</td><td align="left">MAY escalate. Outcome is unknown; apply conservative policy.</td></tr>
+</tbody>
+</table>
+<t>Failure Report format:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "failure_category": "FRESHNESS_EXPIRED",
+  "severity": "CRITICAL",
+  "receipt_trace_id": "a1b2c3d4e5f67890",
+  "timestamp": 1722384061.0
+}
+]]></sourcecode>
+</section>
+<section title="Outcome Status Mapping" anchor="s-12.4">
+<t>This section defines how CCS outcome statuses map to enforcement decisions.</t>
+<table anchor="tbl-8">
+<name>Figure 8</name>
+<thead><tr><th align="left">Outcome Status</th><th align="left">Enforcement Behavior</th></tr></thead>
+<tbody>
+<tr><td align="left">confirmed</td><td align="left">Enforcement MAY proceed with the action.</td></tr>
+<tr><td align="left">dispatched</td><td align="left">Enforcement MUST wait for reconciliation before finalizing.</td></tr>
+<tr><td align="left">indeterminate</td><td align="left">Enforcement MUST treat as unverified and apply conservative policy.</td></tr>
+<tr><td align="left">unknown</td><td align="left">Enforcement MUST NOT assume success or failure. Retry is permitted only with an idempotency key; non-idempotent actions MUST be surfaced for explicit resolution.</td></tr>
+</tbody>
+</table>
+<t>Combined verdict and outcome_status mapping:</t>
+<table anchor="tbl-9">
+<name>Figure 9</name>
+<thead><tr><th align="left">Verdict</th><th align="left">Outcome</th><th align="left">Enforcement Action</th><th align="left">Rationale</th></tr></thead>
+<tbody>
+<tr><td align="left">allow</td><td align="left">confirmed</td><td align="left">Proceed</td><td align="left">Full evidence</td></tr>
+<tr><td align="left">allow</td><td align="left">dispatched</td><td align="left">Proceed with reconciliation pending</td><td align="left">Authorized but unconfirmed</td></tr>
+<tr><td align="left">allow</td><td align="left">indeterminate</td><td align="left">Apply conservative policy; may escalate</td><td align="left">No outcome visibility</td></tr>
+<tr><td align="left">deny</td><td align="left">confirmed</td><td align="left">Block</td><td align="left">Blocked locally</td></tr>
+<tr><td align="left">escalate</td><td align="left">*</td><td align="left">Defer to higher authority</td><td align="left">Verifier cannot decide</td></tr>
+</tbody>
+</table>
+<t>This mapping aligns with the AEB draft terminology (INDETERMINATE, PROVISIONAL, lifecycle boundaries) as discussed with Iman Schrock (AEB-03).</t>
+</section>
+<section title="One Test, Stated Once" anchor="s-12.5">
+<t>A given security or correctness property MUST be tested by exactly one structural test across the entire conformance surface. If a property is checked at intake (Section 3) and again at enforcement (Section 12), the two checks MUST be the same test: same trigger predicate, same scope set, same pass/fail condition, same handling of the indeterminate case.</t>
+<t>The motivation is concrete. Earlier drafts contained a case in which a property was tested one way at L1 receipt validation, and then a weaker version of the same property governed exclusions at enforcement. An attacker who could not pass the strong test could satisfy the weak test via the exclusion path.</t>
+<t>Conformance rules for this section:</t>
+<ol>
+<li><t>For each property that is checked at more than one point, the specification names the single authoritative test and all other check points reference it by section number.</t></li>
+<li><t>A check point MUST NOT introduce a separate condition, threshold, or scope that would cause the same input to be accepted at one point and rejected at another for reasons other than explicitly stated policy.</t></li>
+<li><t>If an enforcement layer needs to apply a stricter policy than L1 validation, that is an enforcement policy choice and is permitted, but it MUST be expressed as policy on top of the shared test, not as a different test.</t></li>
+<li><t>Exclusions and exceptions are themselves tests. A rule that says &quot;X must hold, unless Y&quot; defines two tests, and Y MUST meet the same structural-test discipline as X (Section 4.8).</t></li>
+</ol>
+<t>Appendix E records, for each of the 16 rules, where its single authoritative test lives.</t>
+</section>
+</section>
+
+<section title="Negative Test Cases" anchor="s-13">
+<t>This section defines negative test cases that a conforming CCS implementation MUST detect and reject. These negative cases demonstrate that the bindings defined in Section 6 are load-bearing: removing any one binding reopens the corresponding attack.</t>
+<section title="Changed Arguments" anchor="s-13.1">
+<t>Scenario: An attacker intercepts a valid receipt for tool invocation A, modifies the tool parameters, and presents the modified command with the original receipt.</t>
+<t>Expected receipt change: The params_hash (and request_hash at Level 1+) no longer matches the modified parameters.</t>
+<t>Expected verdict: DENY.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+recomputed_params_hash = compute_params_hash(modified_params)
+assert recomputed_params_hash != receipt.params_hash
+]]></sourcecode>
+<t>Binding defeated if removed: params_hash binding (Section 6.5).</t>
+</section>
+<section title="Changed Response" anchor="s-13.2">
+<t>Scenario: An attacker intercepts the tool&#x27;s response, modifies it, and presents the modified response with the original receipt.</t>
+<t>Expected receipt change: The response_hash no longer matches.</t>
+<t>Expected verdict: The receipt is still valid for the pre-invocation decision, but the downstream consumer detects the response mismatch.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+recomputed = hashlib.sha256(modified_response_bytes).hexdigest()
+assert recomputed != receipt.response_hash
+]]></sourcecode>
+<t>Binding defeated if removed: response_hash binding (Section 6.2).</t>
+</section>
+<section title="Replay" anchor="s-13.3">
+<t>Scenario: An attacker captures a valid receipt for a one-time action and replays it to authorize a second invocation.</t>
+<t>Expected receipt change: The nonce has already been recorded in the consumer&#x27;s replay cache.</t>
+<t>Expected verdict: DENY (replay detected).</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+if (receipt.issuer, receipt.nonce) in replay_cache:
+    return DENY
+]]></sourcecode>
+<t>Binding defeated if removed: nonce/sequence binding (Section 6.8).</t>
+</section>
+<section title="Stale Evidence" anchor="s-13.4">
+<t>Scenario: An attacker presents a receipt issued 24 hours ago for a time-sensitive action.</t>
+<t>Expected receipt change: The expires_at field has passed.</t>
+<t>Expected verdict: DENY (expired receipt).</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+if current_time > receipt.expires_at + receipt.max_clock_skew:
+    return DENY
+]]></sourcecode>
+<t>Binding defeated if removed: freshness binding (Section 6.9).</t>
+</section>
+<section title="Wrong Audience" anchor="s-13.5">
+<t>Scenario: An attacker obtains a receipt intended for Executor A and presents it to Executor B.</t>
+<t>Expected receipt change: The audience field identifies Executor A.</t>
+<t>Expected verdict: DENY (audience mismatch).</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+if receipt.audience != expected_audience:
+    return DENY
+]]></sourcecode>
+<t>Binding defeated if removed: audience binding (Section 6.7).</t>
+</section>
+<section title="Key Substitution" anchor="s-13.6">
+<t>Scenario: An attacker generates their own signing key, produces a forged receipt, and presents it with the attacker&#x27;s public key.</t>
+<t>Expected receipt change: The receipt&#x27;s issuer is not in the consumer&#x27;s trust anchor store.</t>
+<t>Expected verdict: DENY (untrusted key).</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+if receipt.issuer not in trusted_issuers:
+    return DENY
+if not verify_signature(receipt, trusted_public_keys[receipt.issuer]):
+    return DENY
+]]></sourcecode>
+<t>Binding defeated if removed: issuer binding (Section 6.6).</t>
+</section>
+<section title="Verifier/Runtime Collusion" anchor="s-13.7">
+<t>Scenario: The agent runtime and the verifier are operated by the same entity. The verifier always returns ALLOW.</t>
+<t>Expected receipt change: No change to the receipt. The receipt is valid but the rule evaluation is trivially permissive.</t>
+<t>Expected verdict: The receipt passes cryptographic verification, but the AEB SHOULD flag the verifier as Class C and apply additional scrutiny.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+if verifier.deny_rate < 0.001 and verifier.total_receipts > 10000:
+    flag_for_review(verifier)
+]]></sourcecode>
+<t>Binding defeated if removed: Independent auditing (Class B) or out-of-process deployment with independent operator.</t>
+</section>
+<section title="Missing Transport" anchor="s-13.8">
+<t>Scenario: The verifier is configured for out-of-process deployment, but the transport is unavailable. The agent falls back to allowing the invocation without verification.</t>
+<t>Expected receipt change: No receipt is produced.</t>
+<t>Expected verdict: DENY. The fail-closed semantics (Section 8.1) mandate that the invocation MUST be blocked.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+N/A
+]]></sourcecode>
+<t>Binding defeated if removed: Transport requirements (Section 8).</t>
+</section>
+<section title="Intake Fail-Closed Bypass" anchor="s-13.9">
+<t>Scenario: An attacker submits malformed input to trigger an exception in the intake parser, hoping the system falls back to fail-open.</t>
+<t>Expected receipt change: The intake returns an IntakeError and no receipt is produced.</t>
+<t>Expected verdict: DENY. The caller MUST treat absence of a receipt as denial.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+N/A
+]]></sourcecode>
+<t>Binding defeated if removed: Intake fail-closed semantics (Section 3.3).</t>
+</section>
+<section title="Chain Tampering" anchor="s-13.10">
+<t>Scenario: An attacker attempts to insert, remove, or modify a receipt in an Evidence Chain.</t>
+<t>Expected receipt change: The chain linkage (previous_receipt_hash) breaks at the tampering point; the summary hash changes.</t>
+<t>Expected verdict: The chain verification (Section 11.5) detects the tampering and returns chain_valid=false.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+N/A
+]]></sourcecode>
+<t>Binding defeated if removed: Chain integrity verification (Section 11.5).</t>
+</section>
+<section title="Cross-Org Missing Self-Verification" anchor="s-13.11">
+<t>Scenario: An attacker strips the signature from a cross-org envelope, hoping the receiving organization skips verification.</t>
+<t>Expected receipt change: The envelope lacks the data required for self-contained verification.</t>
+<t>Expected verdict: The receiving organization MUST reject the envelope as not self-contained.</t>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+N/A
+]]></sourcecode>
+<t>Binding defeated if removed: Cross-Organization Propagation (Section 11.3).</t>
+</section>
+<section title="Description Obfuscation Attack" anchor="s-13.12">
+<t>Scenario: An attacker modifies a tool&#x27;s description field to replace dangerous keywords with benign synonyms while preserving the tool&#x27;s actual functionality. For example, changing &quot;execute shell command&quot; to &quot;process text instruction&quot; or &quot;delete file&quot; to &quot;remove item&quot;. The tool&#x27;s parameters and behavior remain unchanged, but text-matching security rules no longer trigger.</t>
+<t>Expected receipt change: The security rules that rely on lexical pattern matching against tool descriptions fail to detect the dangerous functionality. The receipt is issued with verdict=allow despite the tool performing high-risk operations.</t>
+<t>Expected verdict: The text-matching rules return ALLOW, but behavioral analysis SHOULD return DENY or ESCALATE. This discrepancy reveals the vulnerability.</t>
+<t>Empirical findings (Section 20.6 and CCS Supplementary Benchmark V2):</t>
+<ul>
+<li><t>Test methodology: 30 tools with dangerous functionality (shell execution, file deletion, network requests) had their descriptions obfuscated using synonym replacement. The obfuscated descriptions preserved functionality but removed trigger keywords.</t></li>
+<li><t>Results: 10 out of 30 obfuscated tools (33.3%) bypassed text-matching security rules and received ALLOW verdicts when they should have been denied or escalated.</t></li>
+<li><t>Evasion patterns: &quot;shell_exec&quot; → &quot;text_processor&quot;, &quot;delete_file&quot; → &quot;remove_item&quot;, &quot;send_request&quot; → &quot;transmit_data&quot;. All preserved functional semantics while evading lexical detection.</t></li>
+<li><t>Baseline comparison: The same 30 tools with original descriptions were blocked at 100% rate, confirming that the evasion is due to description obfuscation, not functional change.</t></li>
+</ul>
+<t>Detection condition:</t>
+<sourcecode type="python"><![CDATA[
+# Text-matching rules (vulnerable):
+if "shell" in tool.description or "exec" in tool.description:
+    return DENY
+# This fails when description is obfuscated to "text_processor"
+
+# Behavioral detection (mitigation):
+if tool.actual_behavior matches DANGEROUS_BEHAVIOR_PATTERNS:
+    return DENY  # Regardless of description text
+]]></sourcecode>
+<t>Binding defeated if removed: Security rules that rely solely on description text matching without behavioral verification. This is NOT a binding in the cryptographic sense, but a design limitation in the rule evaluation layer.</t>
+<t>Mitigation: Implementations SHOULD combine lexical pattern matching with behavioral analysis (Section 14). The CCS receipt binds to the tool name and parameters, but the security rules that produce the verdict must evaluate both description text AND actual behavior to resist obfuscation attacks.</t>
+</section>
+</section>
+
+<section title="Security Considerations" anchor="s-14">
+<ul>
+<li><t>Description obfuscation vulnerability. Text-matching security rules that evaluate tool descriptions are vulnerable to synonym replacement attacks. Empirical testing (Section 13.12) demonstrates a 33.3% evasion success rate when dangerous keywords are replaced with benign alternatives while preserving functionality. Mitigation: Implementations SHOULD combine lexical pattern matching with behavioral analysis that evaluates actual tool behavior, not just description text. The CCS receipt binds to tool name and parameters, but the security rules producing the verdict must resist obfuscation by analyzing both description semantics and runtime behavior. This vulnerability is orthogonal to the cryptographic bindings; it is a limitation of the rule evaluation layer, not the evidence layer.</t></li>
+<li><t>Truncated hashes. The 0.4.1 implementation truncates params_hash to 16 hex characters (64 bits) and receipt to 32 hex characters (128 bits). Implementations targeting cross-deployment interoperability SHOULD use full-length digests.</t></li>
+<li><t>HMAC key exposure in in-process mode. When the verifier runs in the same process as the agent, a compromised agent can read the signing key from memory. Out-of-process deployment mitigates this.</t></li>
+<li><t>Float timestamp precision. The timestamp and verified_at fields use Python floats (IEEE 754 double precision). Implementations SHOULD use monotonic clocks for latency measurement and wall clocks only for issuance timestamps.</t></li>
+<li><t>JSON canonicalization. The params_hash and config_hash depend on deterministic JSON serialization. Implementations MUST use the canonical serialization specified in Section 4.2 and Section 5.2.</t></li>
+<li><t>Rule evaluation ordering. The config_hash binding (Level 1+) addresses this by binding the receipt to the exact rule set.</t></li>
+<li><t>TOCTOU in out-of-process mode. The runtime_context_hash (Level 2) mitigates this by binding the receipt to the context at verification time.</t></li>
+<li><t>Verifier policy floor degradation. A Class C verifier may declare a weaker policy floor. Mitigation: independent auditing (Class B) or out-of-process deployment with independent operator.</t></li>
+<li><t>Outcome status confusion. Implementations MUST NOT treat outcome_status as a verdict or use it to override the verdict decision.</t></li>
+<li><t>Cross-organization evidence leakage. When evidence propagates across organizational boundaries, the Evidence Envelope contains the full receipt. Implementations SHOULD consider data minimization; any omitted field MUST NOT break signature verification.</t></li>
+<li><t>Cross-org replay. A receipt issued for organization A might be replayed against organization B. Mitigation: the audience binding (Section 6.7) MUST be enforced at each organizational boundary.</t></li>
+<li><t>Chain integrity attacks. An attacker who controls the verifier at a single hop can produce a valid receipt for that hop, but the evidence at that hop is fraudulent. Mitigation: Class B or Class A verification at every hop.</t></li>
+<li><t>Intake fail-closed bypass. The fail-closed invariant (Section 3.3) ensures that no receipt is produced on failure. Implementations MUST ensure the intake error handling code path does not contain any fallback that allows the invocation to proceed.</t></li>
+<li><t>Enforcement interface confusion. The Enforcement Interface (Section 12.4) defines an explicit mapping table that MUST be followed. Implementations MUST NOT allow custom mappings that weaken the enforcement guarantees.</t></li>
+<li><t>Evidence accumulation overflow. The maximum hop_count (recommended: 16, Section 11.2) limits chain length. Implementations SHOULD enforce this limit.</t></li>
+<li><t>Trust anchor compromise in cross-org scenarios. Implementations MUST support revocation of trust anchors and MUST re-validate in-flight evidence when a trust anchor is revoked.</t></li>
+</ul>
+</section>
+
+<section title="IANA Considerations" anchor="s-15">
+<t>This document does not request any IANA allocations.</t>
+</section>
+
+<section title="CCS v1.3 Receipt Field Summary Table" anchor="s-17">
+<table anchor="tbl-10">
+<name>CCS v1.3 Receipt Field Summary</name>
+<thead><tr><th align="left">#</th><th align="left">Field</th><th align="left">Type</th><th align="left">Level</th><th align="left">Status</th><th align="left">Signed</th><th align="left">Description</th></tr></thead>
+<tbody>
+<tr><td align="left">1</td><td align="left">trace_id</td><td align="left">16-char hex</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Unique event identifier</td></tr>
+<tr><td align="left">2</td><td align="left">verdict</td><td align="left">enum string</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">allow / deny / escalate</td></tr>
+<tr><td align="left">3</td><td align="left">timestamp</td><td align="left">float</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Verification time</td></tr>
+<tr><td align="left">4</td><td align="left">tool</td><td align="left">string</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Tool name</td></tr>
+<tr><td align="left">5</td><td align="left">params_hash</td><td align="left">16-char hex</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">SHA-256 of params, truncated</td></tr>
+<tr><td align="left">6</td><td align="left">rule_summary</td><td align="left">string</td><td align="left">0</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Pipe-delimited rule results</td></tr>
+<tr><td align="left">7</td><td align="left">receipt</td><td align="left">32-char hex</td><td align="left">0</td><td align="left">Implemented</td><td align="left">N/A</td><td align="left">HMAC-SHA256 signature</td></tr>
+<tr><td align="left">8</td><td align="left">verified_at</td><td align="left">float</td><td align="left">0</td><td align="left">Implemented</td><td align="left">No</td><td align="left">Verification timestamp</td></tr>
+<tr><td align="left">9</td><td align="left">block_reason</td><td align="left">string</td><td align="left">0</td><td align="left">Implemented</td><td align="left">No</td><td align="left">Deny/escalate reason</td></tr>
+<tr><td align="left">10</td><td align="left">request_hash</td><td align="left">hex string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">SHA-256 of full request</td></tr>
+<tr><td align="left">11</td><td align="left">config_hash</td><td align="left">hex string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">SHA-256 of canonical config</td></tr>
+<tr><td align="left">12</td><td align="left">response_hash</td><td align="left">hex string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Post-hoc</td><td align="left">SHA-256 of response</td></tr>
+<tr><td align="left">13</td><td align="left">runtime_context_hash</td><td align="left">hex string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">SHA-256 of runtime context</td></tr>
+<tr><td align="left">14</td><td align="left">action</td><td align="left">string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">CAID-compatible action ID</td></tr>
+<tr><td align="left">15</td><td align="left">issuer</td><td align="left">URI string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Verifier identifier</td></tr>
+<tr><td align="left">16</td><td align="left">audience</td><td align="left">URI string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Intended consumer</td></tr>
+<tr><td align="left">17</td><td align="left">nonce</td><td align="left">hex string</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Single-use anti-replay</td></tr>
+<tr><td align="left">18</td><td align="left">sequence</td><td align="left">integer</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Monotonic counter</td></tr>
+<tr><td align="left">19</td><td align="left">issued_at</td><td align="left">float</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Issue timestamp</td></tr>
+<tr><td align="left">20</td><td align="left">expires_at</td><td align="left">float</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Expiry timestamp</td></tr>
+<tr><td align="left">21</td><td align="left">max_clock_skew</td><td align="left">float</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Clock tolerance (seconds)</td></tr>
+<tr><td align="left">22</td><td align="left">signature</td><td align="left">128-char hex</td><td align="left">1</td><td align="left">Implemented</td><td align="left">Yes</td><td align="left">Ed25519 signature over canonical JSON</td></tr>
+</tbody>
+</table>
+</section>
+
+<section title="Mapping to draft-feng-agentproto-session-requirements-01" anchor="s-18">
+<t>This appendix maps CCS receipt fields and protocol mechanisms to the requirements expressed in draft-feng-agentproto-session-requirements-01. The mapping is informative, not normative on either document.</t>
+<section title="REQ-5: Verifiable Authorization Binding" anchor="s-18.1">
+<t>REQ-5 requires that a session carry verifiable evidence that an action was authorized, such that the authorization decision cannot be silently substituted after the fact. CCS satisfies this via:</t>
+<ul>
+<li><t>The action binding (Section 6.4): the receipt binds the verdict to the exact deterministic action identifier and canonical parameters.</t></li>
+<li><t>The Ed25519 signature over the canonical signed bytes (Section 4.2): the verifier that issued the verdict is identified by the issuer field and cannot repudiate the decision.</t></li>
+<li><t>The config_hash (Section 5.3): the exact rule set under which the verdict was reached is hash-bound.</t></li>
+<li><t>The freshness binding (Section 6.9): issued_at, expires_at, and max_clock_skew prevent long-term replay.</t></li>
+</ul>
+<t>A CCS receipt attests the verifier&#x27;s runtime decision; it is distinct from, and composable with, the human-authorization record described by <xref target="I-D.schrock-ep-authorization-receipts"/>, which records that a named principal approved a high-risk action.</t>
+</section>
+<section title="REQ-7: Action Evidence Non-Repudiation" anchor="s-18.2">
+<t>REQ-7 requires that evidence of an action and its authorization be non-repudiable and independently verifiable by a party that was not present at decision time. CCS satisfies this via:</t>
+<ul>
+<li><t>Offline verification (Section 11.5): all data necessary to verify a receipt is present in the EC structure.</t></li>
+<li><t>Verifier source classification (Section 9): third parties can distinguish Class A, B, and C verifiers.</t></li>
+<li><t>The capability manifest (Section 4.6) and its profiles_digest binding.</t></li>
+<li><t>Audit-grade signatures: conforming deployments at Level 2 and above use Ed25519 rather than HMAC.</t></li>
+</ul>
+</section>
+<section title="Out-of-Scope Items" anchor="s-18.3">
+<t>CCS does not itself establish session transport, sequence numbering at the transport layer, or connection lifecycle; those are the session requirements draft&#x27;s domain. CCS supplies the evidence artifact that a session carries; it does not replace the session.</t>
+</section>
+</section>
+
+<section title="Mapping to AUDIT BOF / W3C PROV" anchor="s-19">
+<t>This appendix maps CCS receipt fields to the W3C PROV vocabulary. The mapping is informative.</t>
+<section title="Field Mapping" anchor="s-19.1">
+<table anchor="tbl-w3c">
+<name>W3C PROV Field Mapping</name>
+<thead><tr><th align="left">CCS field</th><th align="left">W3C PROV concept</th><th align="left">Notes</th></tr></thead>
+<tbody>
+<tr><td align="left">receipt (signed)</td><td align="left">prov:Entity</td><td align="left">The evidence artifact.</td></tr>
+<tr><td align="left">issuer</td><td align="left">prov:wasAttributedTo</td><td align="left">The verifier that produced it.</td></tr>
+<tr><td align="left">action</td><td align="left">prov:wasGeneratedBy</td><td align="left">The activity (tool invocation) that generated the evidence.</td></tr>
+<tr><td align="left">request_hash</td><td align="left">prov:specializationOf</td><td align="left">Binds the evidence to the exact request entity.</td></tr>
+<tr><td align="left">response_hash</td><td align="left">prov:wasDerivedFrom</td><td align="left">Binds to the response entity.</td></tr>
+<tr><td align="left">issued_at</td><td align="left">prov:generatedAtTime</td><td align="left">Issue timestamp.</td></tr>
+<tr><td align="left">expires_at</td><td align="left">(provenance validity)</td><td align="left">Expiry of the evidence as an authorization input.</td></tr>
+<tr><td align="left">previous_receipt_hash (chain)</td><td align="left">prov:wasDerivedFrom</td><td align="left">Chain linkage in multi-agent propagation.</td></tr>
+<tr><td align="left">Ed25519 signature (envelope)</td><td align="left">(signature)</td><td align="left">Integrity and non-repudiation over the entity.</td></tr>
+</tbody>
+</table>
+</section>
+<section title="Positioning" anchor="s-19.2">
+<t>CCS is a runtime supply-side source of audit records. A CCS verifier produces signed evidence at the moment of an action; an AUDIT-conformant system can ingest these records and assemble them into longer delegation and interaction traces. CCS does not define the trace assembly, retention policy, or auditor-facing query language; those are AUDIT&#x27;s scope. The two are complementary: CCS provides trustworthy atoms, AUDIT provides the molecule.</t>
+<t>With respect to SCITT <xref target="RFC9943"/>, CCS occupies the payload-content layer that the SCITT Working Group charter places outside its standardization scope. SCITT defines how signed statements are registered in transparency services and how non-equivocation and later verification are achieved; it deliberately does not define the internal format of the evidence being registered. CCS defines one such internal evidence format (a verifier-side runtime verification receipt with its own detached Ed25519 signature). Consequently the two do not compete: CCS receipts can exist and be verified entirely without SCITT, and if non-equivocation beyond the local hash chaining in Section 11 is desired, a CCS receipt can be registered as a SCITT signed-statement payload through a separate transport profile that this document does not define. Recent individual drafts proposing SCITT profiles for AI-agent action receipts target the same payload-content layer using SCITT-native COSE envelopes; they are alternative or composable payload encodings, and their existence demonstrates active community interest rather than a conflict with an adopted IETF work item, because none has been adopted by the SCITT Working Group at the time of writing.</t>
+</section>
+</section>
+
+<section title="Trigger/Scope Audit of the 16 Security Rules" anchor="s-20">
+<t>This appendix records the result of the double-position audit required by Section 4.8. Each of the 16 CCS security rules is stated with its trigger and its scope, and the single location of its authoritative test per Section 12.5.</t>
+<section title="Input Rules" anchor="s-20.1">
+<table anchor="tbl-input-rules">
+<name>Input Rules (SEC-001..SEC-008)</name>
+<thead><tr><th align="left">Rule</th><th align="left">Trigger (structural)</th><th align="left">Scope (closed set)</th><th align="left">Test</th></tr></thead>
+<tbody>
+<tr><td align="left">SEC-001</td><td align="left">request contains an absolute URL-valued argument whose host resolves to a private/link-local/loopback address</td><td align="left">arguments of any tool</td><td align="left">Section 3.3</td></tr>
+<tr><td align="left">SEC-002</td><td align="left">argument string matches command-injection structural pattern with chain score at or above threshold</td><td align="left">arguments of tools in COMMAND_EXECUTION_TOOL set (closed list)</td><td align="left">Section 4.7</td></tr>
+<tr><td align="left">SEC-003</td><td align="left">argument contains a value matching a deployed secret regex</td><td align="left">network-facing tool arguments destined for a network-facing tool</td><td align="left">Section 4.7</td></tr>
+<tr><td align="left">SEC-004</td><td align="left">argument path contains a traversal sequence targeting a blocked absolute path</td><td align="left">path-valued arguments of any tool</td><td align="left">Section 4.7</td></tr>
+<tr><td align="left">SEC-005</td><td align="left">tool name is in destructive set and request lacks an explicit human-approval attestation</td><td align="left">tool name</td><td align="left">Section 4.7</td></tr>
+<tr><td align="left">SEC-006</td><td align="left">argument string, when parsed as a shell command, contains a non-heredoc download-to-execute chain</td><td align="left">arguments of command-execution tools</td><td align="left">Section 4.7</td></tr>
+<tr><td align="left">SEC-007</td><td align="left">request omits a required canonical field</td><td align="left">presence of required field in canonical request</td><td align="left">Section 3.2</td></tr>
+<tr><td align="left">SEC-008</td><td align="left">canonical config hash does not match a pinned value</td><td align="left">config_hash value compared to pinned set</td><td align="left">Section 5.3</td></tr>
+</tbody>
+</table>
+</section>
+<section title="Output Rules" anchor="s-20.2">
+<table anchor="tbl-output-rules">
+<name>Output Rules (OUT-001..OUT-008)</name>
+<thead><tr><th align="left">Rule</th><th align="left">Trigger (structural)</th><th align="left">Scope (closed set)</th><th align="left">Test</th></tr></thead>
+<tbody>
+<tr><td align="left">OUT-001</td><td align="left">output content contains a credential pattern destined for a network sink</td><td align="left">output text from network-facing tools</td><td align="left">Section 12.2</td></tr>
+<tr><td align="left">OUT-002</td><td align="left">output content matches prompt-injection structural pattern above threshold</td><td align="left">output text from any tool</td><td align="left">Section 12.2</td></tr>
+<tr><td align="left">OUT-003</td><td align="left">output from a network-fetch tool contains a literal instruction pattern that addresses the agent system prompt</td><td align="left">output of tools in the NETWORK_FETCH_TOOL set</td><td align="left">Section 12.2</td></tr>
+<tr><td align="left">OUT-004</td><td align="left">output content length exceeds declared max_size</td><td align="left">output metadata</td><td align="left">Section 3.4</td></tr>
+<tr><td align="left">OUT-005</td><td align="left">output content_type does not match declared schema</td><td align="left">output metadata</td><td align="left">Section 3.4</td></tr>
+<tr><td align="left">OUT-006</td><td align="left">output contains a chain linkage that does not verify against previous_receipt_hash</td><td align="left">output text from any tool</td><td align="left">Section 12.2</td></tr>
+<tr><td align="left">OUT-007</td><td align="left">output carries an outcome_status outside the closed enum</td><td align="left">output metadata</td><td align="left">Section 12.4</td></tr>
+<tr><td align="left">OUT-008</td><td align="left">output signature does not verify under issuer key</td><td align="left">signature field</td><td align="left">Section 4.2</td></tr>
+</tbody>
+</table>
+</section>
+<section title="Audit Notes" anchor="s-20.3">
+<t>In the course of the audit for this revision, SEC-006 and OUT-003 were reworded. SEC-006 previously used the phrase &quot;suspicious download pattern,&quot; which required implementer judgement; it now specifies a structural chain (a fetch primitive followed by an execution primitive within the same parsed command, outside a heredoc). OUT-003 previously applied to &quot;any tool output that appears to address the agent,&quot; which was qualitative; it is now scoped to network-fetching tools and triggered by literal instruction patterns.</t>
+<t>Each rule&#x27;s authoritative test lives at the section listed. No rule is tested by a second, weaker test elsewhere; enforcement (Section 12) references the same structural predicate.</t>
+</section>
+</section>
+
+<section title="Implementation Notes" anchor="s-21">
+<t>This appendix is informative. It documents implementation experience from two source-available deployments of CCS.</t>
+<section title="dsh-ccs-security (DeepSeek Harness Plugin)" anchor="s-21.1">
+<t>dsh-ccs-security is a runtime plugin for the DeepSeek Harness agent framework that enforces CCS checks in-process. It exercises the evidence-plane/enforcement-plane separation described in Section 4.7.3.</t>
+<t>Two implementation observations informed this revision:</t>
+<ol>
+<li><t>Tool-aware enforcement. Applying a single command-injection threshold to every tool&#x27;s string arguments caused false positives when the agent wrote documentation containing shell examples. The fix classifies tools: command-execution tools are scanned at the strict threshold; data tools are scanned at a raised threshold or audited only.</t></li>
+<li><t>Output-side source classification. Scanning every tool&#x27;s output for prompt-injection patterns blocked reads of the plugin&#x27;s own test fixtures. The fix distinguishes trusted local read from untrusted network fetch.</t></li>
+</ol>
+</section>
+<section title="correctover-mcp-gateway" anchor="s-21.2">
+<t>correctover-mcp-gateway is an out-of-process MCP proxy that enforces CCS at the transport boundary between an agent and an MCP server. It exercises the out-of-process deployment model of Section 8.3 and demonstrates that the same receipt schema can be produced by a process that is not co-resident with the agent. Performance measurements on commodity hardware show a median verification latency in the single-digit-microsecond range for the core check path; exact figures are version-specific and are not normative.</t>
+</section>
+<section title="Lessons" anchor="s-21.3">
+<t>The two deployments together confirm that the evidence/enforcement separation is not merely theoretical: when the same component both records evidence and decides enforcement, false positives become self-fulfilling. Separating the two, with the evidence plane fail-closed and the enforcement plane policy-driven, yields a system that is both auditable and usable.</t>
+</section>
+<section title="Watchdog Interruption and Outcome=Unknown" anchor="s-21.4">
+<t>During a watchdog-driven hot-reload of the dsh-ccs-security plugin, the supervising process terminated running tool invocations before their results could be durably recorded. The CCS receipts had already been persisted, but the post-execution outcome was lost. This incident motivated the outcome_status=unknown state added in Section 4.5.</t>
+<t>Three implementation lessons follow:</t>
+<ol>
+<li><t>The evidence plane must write the receipt before the enforcement plane acts, and the write must be independent of the tool process lifecycle.</t></li>
+<li><t>A watchdog or hot-reload mechanism MUST implement graceful shutdown for active tool calls.</t></li>
+<li><t>The distinction between indeterminate and unknown is not academic. An unknown receipt requires explicit action (idempotent retry or human resolution) because the verifier has positive evidence that the execution did not complete.</t></li>
+</ol>
+</section>
+<section title="EMILIA Protocol Independent Interoperability Profile" anchor="s-21.5">
+<t>The EMILIA Protocol project implemented an independent CCS-05 v1.3 AEB interoperability profile, merged as commit 5fb2eae9b20d17685e1ecbe061eb4ced03dbe64e (PGP-signed, verified). This implementation was developed independently of the Correctover reference codebase and validates the CCS-05 v1.3 receipt profile directly against the draft bytes; the profile is published as <xref target="EMILIA-INTEROP"/>.</t>
+<t>The profile exercises 14 conformance checks:</t>
+<ol>
+<li><t>Source pin: draft-correctover-ccs-05.txt pinned by SHA-256 digest c91f0fa31b1b9e5e2dfe79b99f3b554075d3a44d5309406e748b728f86767cb9.</t></li>
+<li><t>Separation from 1.1.14 package shape: the v1.3 receipt is structurally distinct from the ccs-verifier 1.1.14 receipt version 1.1 shape.</t></li>
+<li><t>Live response binding: response_hash binds to actual tool output.</t></li>
+<li><t>Ed25519 verification: signature verifies under an RP-pinned public key derived from a deterministic test seed.</t></li>
+<li><t>Exact-action CAID mapping: the signed full parameter digest maps to the executor-constructed CAID without field guessing.</t></li>
+<li><t>Signature mutation: any modification to the signature bytes fails verification.</t></li>
+<li><t>Untrusted key: a receipt signed by a key not in the RP pin set is rejected.</t></li>
+<li><t>Audience binding: receipts issued for a different audience are rejected.</t></li>
+<li><t>Freshness: expired receipts are rejected.</t></li>
+<li><t>Parameter substitution: changing any parameter value changes the params_hash and fails verification.</t></li>
+<li><t>Full-digest substitution: the 16-hex params_hash prefix correctly binds to the full SHA-256 parameter digest.</t></li>
+<li><t>Consumed status: one-time-use receipts cannot be replayed.</t></li>
+<li><t>Unavailable status: receipts for unavailable resources are handled distinctly from consumed.</t></li>
+<li><t>Native deny non-authorizing: a CCS DENY verdict remains an evidence statement and does not constitute authorization, consistent with Section 4.7.3.</t></li>
+</ol>
+<t>The 22-field v1.3 receipt uses a deterministic Ed25519 key pair derived from the seed &#x27;emilia/ccs-05-v1.3-independent-interop/v1&#x27;. The signature is a detached Ed25519 signature over the RFC 8785 canonical JSON of the other 21 fields, consistent with Section 4.2.</t>
+<t>This implementation confirms that the CCS-05 v1.3 receipt specification is sufficient for independent implementation without reference to the author&#x27;s codebase.</t>
+</section>
+<section title="Measurement Caliber and Empirical Baseline" anchor="s-21.6">
+<t>This section clarifies the denominator chain for benchmark claims and establishes reproducible measurement methodology for CCS implementations. Empirical benchmark claims are only meaningful when the measurement caliber is explicit; different denominators produce incomparable results.</t>
+<t>Denominator chain (verified November 2026):</t>
+<ol>
+<li><t>Static census: 23,639 tools discovered via public MCP server enumeration. This is the broadest possible denominator but includes unreachable servers, duplicate tools, and tools that never receive runtime invocations.</t></li>
+<li><t>Reachable pool: 1,241 tools on servers that responded to at least one health check within 72 hours. This filters out unreachable infrastructure but still includes tools that may never be invoked.</t></li>
+<li><t>Runtime invocations: 1,092 tool calls observed over a 7-day observation window across 47 agent sessions. This is the operational denominator: tools that were actually invoked and therefore subject to CCS verification.</t></li>
+<li><t>CCS receipts produced: 1,092 receipts (100% coverage of runtime invocations). Every invocation produced a receipt, confirming fail-closed semantics at the intake layer.</t></li>
+<li><t>Independently verified: 50 receipts (4.6% sample) verified by a third-party auditor using only the public key and receipt schema. All 50 passed cryptographic verification, confirming signature integrity and binding consistency.</t></li>
+</ol>
+<t>Measurement caliber implications:</t>
+<ul>
+<li><t>Claims based on the static census (23,639) are NOT comparable to claims based on runtime invocations (1,092). The former measures discovery coverage; the latter measures operational enforcement.</t></li>
+<li><t>Block rate claims MUST specify the denominator: &quot;83.44% block rate&quot; over what population? If the population is &quot;all 23,639 static tools,&quot; the claim measures rule coverage, not runtime enforcement. If the population is &quot;1,092 runtime invocations,&quot; the claim measures operational security posture.</t></li>
+<li><t>Task-level vs. call-level measurement: A single user task may trigger multiple tool calls. Task-level success rates (e.g., &quot;100% task completion&quot;) are NOT comparable to call-level block rates (e.g., &quot;83.44% of calls blocked&quot;). This specification uses call-level measurement as the canonical denominator because CCS receipts are produced per call, not per task.</t></li>
+</ul>
+<t>Baseline comparison methodology:</t>
+<t>When comparing CCS implementation performance across versions or against competing frameworks, the following conditions MUST be met for comparability:</t>
+<ol>
+<li><t>Same denominator: Both measurements use the same population (e.g., both use runtime invocations, not static census).</t></li>
+<li><t>Same observation window: Both measurements cover the same time period or equivalent operational conditions.</t></li>
+<li><t>Same rule set: Both measurements evaluate against the same security rules (or the rules are explicitly mapped to each other).</t></li>
+<li><t>Same measurement level: Both measurements are at the same granularity (call-level, not task-level, or vice versa with explicit conversion).</t></li>
+</ol>
+<t>If any of these conditions are not met, the comparison is NOT valid and the documents MUST state &quot;口径不同，待可比验证&quot; (different calibers, pending comparable verification) rather than claiming superiority.</t>
+<t>Reproducibility archive: The empirical data underlying this measurement caliber clarification, including the description obfuscation test results (Section 13.12) and the 1,092-receipt dataset, is archived at Zenodo DOI: [TO BE ASSIGNED - CCS Supplementary Benchmark V2]. The archived dataset includes the raw tool invocation logs, receipt JSON, verification scripts, and third-party audit report for the 50-receipt sample.</t>
+</section>
+</section>
+
+<section title="Conformance Test Vector Format" anchor="s-22">
+<t>Each conformance test vector is encoded as a JSON object:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "vector_id": "CV-001",
+  "description": "Basic ALLOW receipt verification",
+  "level": 0,
+  "category": "positive",
+  "input": {
+    "command": {
+      "agent_id": "test-agent",
+      "tool": "search_web",
+      "params": {"query": "weather in Tokyo"},
+      "timestamp": 1722384000.0,
+      "trace_id": "0000000000000001"
+    },
+    "rules": ["ssrf_protection", "rce_protection", "credential_leak"],
+    "signing_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  },
+  "expected": {
+    "verdict": "allow",
+    "block_reason": "",
+    "receipt_valid": true,
+    "rule_summary_pattern": "ssrf_protection=allow|rce_protection=allow|credential_leak=allow"
+  },
+  "negative_variant": null
+}
+]]></sourcecode>
+<t>For negative test vectors:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "vector_id": "NV-001",
+  "description": "Changed arguments detected by params_hash mismatch",
+  "level": 0,
+  "category": "negative",
+  "attack": {
+    "type": "changed_arguments",
+    "modification": "params.query changed from 'weather in Tokyo' to 'weather in Osaka'"
+  },
+  "expected": {
+    "detection_point": "params_hash mismatch",
+    "verdict": "deny",
+    "binding_defeated_if_removed": "params_hash (Section 6.5)"
+  }
+}
+]]></sourcecode>
+<t>For Level 4 propagation test vectors:</t>
+<sourcecode type="json"><![CDATA[
+{
+  "vector_id": "CV-008",
+  "description": "Evidence Envelope propagation",
+  "level": 4,
+  "category": "positive",
+  "input": {
+    "agent_a_receipt": {
+      "trace_id": "a1b2c3d4e5f67890",
+      "verdict": "allow",
+      "tool": "delegate_search"
+    },
+    "delegation": {
+      "to_agent": "agent-b",
+      "reason": "domain-specific search"
+    }
+  },
+  "expected": {
+    "envelope_present": true,
+    "envelope_version": "1.3",
+    "hop_count": 1,
+    "previous_receipt_hash_valid": true,
+    "agent_b_receipt_produced": true
+  }
+}
+]]></sourcecode>
+</section>
+</middle>
+<back>
+
+<references title="References">
+<references title="Normative References" anchor="s-ref-norm">
+<reference anchor="RFC2119" target="https://www.rfc-editor.org/info/rfc2119">
+<front><title>Key words for use in RFCs to Indicate Requirement Levels</title>
+<author initials="S." surname="Bradner" fullname="S. Bradner"><organization/></author>
+<date month="March" year="1997"/></front>
+<seriesInfo name="BCP" value="14"/>
+<seriesInfo name="RFC" value="2119"/>
+</reference>
+<reference anchor="RFC7493" target="https://www.rfc-editor.org/info/rfc7493">
+<front><title>The I-JSON Message Format</title>
+<author initials="T." surname="Bray" fullname="T. Bray" role="editor"><organization/></author>
+<date month="March" year="2015"/></front>
+<seriesInfo name="RFC" value="7493"/>
+</reference>
+<reference anchor="RFC8174" target="https://www.rfc-editor.org/info/rfc8174">
+<front><title>Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words</title>
+<author initials="B." surname="Leiba" fullname="B. Leiba"><organization/></author>
+<date month="May" year="2017"/></front>
+<seriesInfo name="BCP" value="14"/>
+<seriesInfo name="RFC" value="8174"/>
+</reference>
+<reference anchor="RFC8785" target="https://www.rfc-editor.org/info/rfc8785">
+<front><title>JSON Canonicalization Scheme (JCS)</title>
+<author initials="A." surname="Rundgren" fullname="A. Rundgren"><organization/></author>
+<author initials="B." surname="Jordan" fullname="B. Jordan"><organization/></author>
+<author initials="S." surname="Erdtman" fullname="S. Erdtman"><organization/></author>
+<date month="June" year="2020"/></front>
+<seriesInfo name="RFC" value="8785"/>
+</reference>
+</references>
+<references title="Informative References" anchor="s-ref-info">
+<reference anchor="RFC9943" target="https://www.rfc-editor.org/info/rfc9943">
+<front><title>Supply Chain Integrity, Transparency, and Trust (SCITT) Architecture</title>
+<author initials="H." surname="Birkholz" fullname="H. Birkholz"><organization/></author>
+<author initials="D." surname="Frost" fullname="D. Frost"><organization/></author>
+<date year="2026" month="June"/></front>
+<seriesInfo name="RFC" value="9943"/>
+</reference>
+<reference anchor="I-D.schrock-action-evidence-boundary" target="https://datatracker.ietf.org/doc/draft-schrock-action-evidence-boundary/">
+<front><title>The Action Evidence Boundary for Consequential Agent Effects</title>
+<author initials="I." surname="Schrock" fullname="Iman Schrock"><organization/></author>
+<date day="3" month="August" year="2026"/></front>
+<seriesInfo name="Internet-Draft" value="draft-schrock-action-evidence-boundary-03"/>
+</reference>
+<reference anchor="I-D.schrock-canonical-action-identifier" target="https://datatracker.ietf.org/doc/draft-schrock-canonical-action-identifier/">
+<front><title>The Canonical Action Identifier (CAID)</title>
+<author initials="I." surname="Schrock" fullname="Iman Schrock"><organization/></author>
+<date day="19" month="July" year="2026"/></front>
+<seriesInfo name="Internet-Draft" value="draft-schrock-canonical-action-identifier-00"/>
+</reference>
+<reference anchor="CCS-FORMAL" target="https://doi.org/10.5281/zenodo.21271910">
+<front><title>CCS Formal Framework</title>
+<author initials="G." surname="Wang" fullname="Guigui Wang"><organization/></author>
+<date year="2026"/></front>
+</reference>
+<reference anchor="CWE-636" target="https://cwe.mitre.org/data/definitions/636.html">
+<front><title>CWE-636: Not Failing Securely (Fail Open)</title>
+<author><organization>MITRE</organization></author>
+<date year="2026"/></front>
+</reference>
+<reference anchor="I-D.schrock-ep-authorization-receipts" target="https://datatracker.ietf.org/doc/draft-schrock-ep-authorization-receipts/">
+<front><title>Authorization Receipts for High-Risk Agent Actions</title>
+<author initials="I." surname="Schrock" fullname="Iman Schrock"><organization/></author>
+<date day="20" month="August" year="2026"/></front>
+<seriesInfo name="Internet-Draft" value="draft-schrock-ep-authorization-receipts-09"/>
+</reference>
+<reference anchor="EMILIA-INTEROP" target="https://github.com/emiliaprotocol/emilia-protocol/tree/5fb2eae9b20d17685e1ecbe061eb4ced03dbe64e/conformance/composition/ccs-v13-aeb-v1">
+<front><title>CCS-05 v1.3 AEB Interoperability Profile</title>
+<author initials="I." surname="Schrock" fullname="Iman Schrock"><organization>EMILIA Protocol</organization></author>
+<date month="August" year="2026"/></front>
+</reference>
+<reference anchor="CCS-SUPP-BENCHMARK-V2" target="https://doi.org/10.5281/zenodo.24068548">
+<front><title>CCS Supplementary Benchmark V2: Description Obfuscation Vulnerability and Measurement Caliber Clarification</title>
+<author initials="G." surname="Wang" fullname="Guigui Wang"><organization>Correctover</organization></author>
+<date month="November" year="2026"/></front>
+<seriesInfo name="Zenodo DOI" value="10.5281/zenodo.24068548"/>
+<annotation>Note: DOI to be assigned upon publication. The archived dataset includes 1,092 CCS receipts, description obfuscation test results (33.3% evasion rate), and measurement caliber documentation.</annotation>
+</reference>
+</references>
+</references>
+
+</back>
+</rfc>
