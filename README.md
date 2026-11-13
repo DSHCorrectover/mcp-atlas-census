@@ -1,6 +1,6 @@
 # MCP Atlas Census
 
-**Largest known live census of MCP tools** — **229,827** tool records with `input_schema` from **13,120** servers (of **42,163** surveyed). Byte-verified. **CC0 1.0**.
+**Live census of MCP tool records** — **229,827** tool records with `input_schema` from **13,120** servers (of **42,163** surveyed). Byte-verified. **CC0 1.0**.
 
 Built for parameter-level risk research, conformance vectors, and agent-security tooling.
 
