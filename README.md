@@ -1,6 +1,6 @@
 # MCP Atlas Census
 
-**Live census of MCP tool records** — **229,827** tool records with `input_schema` from **13,120** servers (of **42,163** surveyed). Byte-verified. **CC0 1.0**.
+**Live census of MCP tool records** — **229,790** tool records with `input_schema` from **13,119** servers (of **42,163** surveyed). Byte-verified. **CC0 1.0**.
 
 Built for parameter-level risk research, conformance vectors, and agent-security tooling.
 
@@ -10,7 +10,7 @@ Related runtime product: **[agent-runtime-guard](https://github.com/DSHCorrectov
 
 | File | Where | Records | Notes |
 |------|-------|---------|-------|
-| `server_tools.jsonl.gz` | [release v1.0.0](https://github.com/DSHCorrectover/mcp-atlas-census/releases/download/v1.0.0/server_tools.jsonl.gz) | **229,827** tools | full `input_schema` · ~90 MB |
+| `server_tools.jsonl.gz` | [release v1.0.0](https://github.com/DSHCorrectover/mcp-atlas-census/releases/download/v1.0.0/server_tools.jsonl.gz) | **229,827** tools† | full `input_schema` · ~90 MB |
 | `servers.jsonl.gz` | in-repo `data/` | **42,163** servers | full surveyed population · ~8.5 MB |
 
 Counts byte-verified 2026-10-29 (`wc -l`, zero malformed lines).
@@ -30,6 +30,8 @@ Counts byte-verified 2026-10-29 (`wc -l`, zero malformed lines).
 
 **CC0 1.0 Universal** — public domain dedication. Use for anything; permission not required.  
 Attribution requested, not required: "Correctover MCP Atlas" — https://github.com/DSHCorrectover/mcp-atlas-census
+
+Archived Zenodo snapshots are licensed **ODC-BY 1.0** (attribution required on those frozen versions): baseline [10.5281/zenodo.23333514](https://doi.org/10.5281/zenodo.23333514), audit pack [10.5281/zenodo.23333516](https://doi.org/10.5281/zenodo.23333516). Frozen baselines cite 229,827 / 13,120 under their own counting rules (live + candidate records; alias-map rows); the in-repo `servers.jsonl.gz` is the ground truth for the numbers above. † marks the frozen-release count.
 
 ## Verify
 
