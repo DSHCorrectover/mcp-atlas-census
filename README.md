@@ -1,5 +1,7 @@
 # MCP Atlas Census
 
+[**Commercial verification engagements — USD 8,000–15,000, court-ready dossier**](https://dshcorrectover.github.io/correctover-recovery-admission/services.html) · [**Independent audit & conformance**](https://dshcorrectover.github.io/correctover-recovery-admission/services.html)
+
 **Live census of MCP tool records** — **229,790** tool records with `input_schema` from **13,119** servers (of **42,163** surveyed). Byte-verified. **CC0 1.0**.
 
 Built for parameter-level risk research, conformance vectors, and agent-security tooling.
